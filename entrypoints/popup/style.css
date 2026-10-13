@@ -1,0 +1,25 @@
+/* Popup base styles (replaces the WXT starter dark theme). */
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  color-scheme: light;
+  color: #1c1e21;
+  background-color: #ffffff;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  margin: 0;
+  min-width: 380px;
+}
+
+h1 {
+  font-size: 1.1rem;
+  line-height: 1.3;
+}
+
+button {
+  font-family: inherit;
+}

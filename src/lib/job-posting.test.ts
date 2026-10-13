@@ -1,0 +1,272 @@
+/**
+ * Tests for the JobPosting model (src/lib/job-posting.ts) — Prompt 07
+ * acceptance: minimal postings, malformed URLs, long/noisy descriptions,
+ * missing optional fields, unknown-value preservation, and the deterministic
+ * section extractor. Storage persistence lives in storage.test.ts.
+ */
+import { describe, expect, it } from 'vitest';
+import {
+  createJobPosting,
+  extractJobSections,
+  jobPostingSchema,
+  jobPostingsRecordSchema,
+  MAX_LIST_ITEMS,
+  MAX_RAW_DESCRIPTION_CHARS,
+  postingUrlSchema,
+  upsertPostingInList,
+  type JobPosting,
+} from './job-posting';
+
+const CAPTURED_AT = '2026-10-13T10:00:00.000Z';
+
+const minimal = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+  id: 'job-1',
+  title: 'Backend Engineer',
+  rawDescription: 'Build and maintain APIs.',
+  capturedAt: CAPTURED_AT,
+  ...over,
+});
+
+const parse = (over: Record<string, unknown> = {}): JobPosting =>
+  jobPostingSchema.parse(minimal(over));
+
+describe('minimal postings and missing optional fields', () => {
+  it('a minimal posting (title + raw + timestamps) is valid with all defaults', () => {
+    const p = parse();
+    expect(p.title).toBe('Backend Engineer');
+    expect(p.schemaVersion).toBe('1');
+    expect(p.source).toBe('manual');
+    // Everything unknown stays ABSENT — never invented:
+    expect(p.company).toBeUndefined();
+    expect(p.location).toBeUndefined();
+    expect(p.originalUrl).toBeUndefined();
+    expect(p.workArrangement).toBeUndefined();
+    expect(p.employmentType).toBeUndefined();
+    expect(p.experienceRange).toBeUndefined();
+    expect(p.compensation).toBeUndefined();
+    expect(p.responsibilities).toEqual([]);
+    expect(p.requiredQualifications).toEqual([]);
+    expect(p.preferredQualifications).toEqual([]);
+    expect(p.skills).toEqual([]);
+    expect(p.updatedAt).toBeUndefined();
+  });
+
+  it('required fields are enforced (missing title/description/capturedAt/id)', () => {
+    expect(jobPostingSchema.safeParse({ ...minimal(), title: '' }).success).toBe(false);
+    expect(jobPostingSchema.safeParse({ id: 'x', title: 'T', capturedAt: CAPTURED_AT }).success).toBe(false);
+    expect(jobPostingSchema.safeParse({ id: 'x', title: 'T', rawDescription: 'd', capturedAt: CAPTURED_AT, }).success).toBe(true);
+    expect(jobPostingSchema.safeParse({ ...minimal(), capturedAt: 'yesterday' }).success).toBe(false);
+    expect(jobPostingSchema.safeParse({ ...minimal(), id: '' }).success).toBe(false);
+  });
+
+  it('whitespace-only description is rejected (raw must contain content)', () => {
+    expect(jobPostingSchema.safeParse(minimal({ rawDescription: '   \n\t  ' })).success).toBe(false);
+  });
+
+  it('unknown extra keys are rejected (strict schema)', () => {
+    expect(jobPostingSchema.safeParse(minimal({ cookies: 'session=abc' })).success).toBe(false);
+  });
+});
+
+describe('URL validation (malformed URLs)', () => {
+  it('rejects malformed and non-http(s) URLs', () => {
+    for (const bad of ['not a url', 'example.com/jobs/1', 'htp://x.com', 'ftp://files.example.com', 'javascript:alert(1)', '']) {
+      expect(postingUrlSchema.safeParse(bad).success, `should reject: ${bad}`).toBe(false);
+    }
+    expect(jobPostingSchema.safeParse(minimal({ originalUrl: 'not a url' })).success).toBe(false);
+    expect(jobPostingSchema.safeParse(minimal({ originalUrl: 'ftp://files.example.com' })).success).toBe(false);
+  });
+
+  it('accepts valid http/https URLs and preserves them', () => {
+    expect(jobPostingSchema.safeParse(minimal({ originalUrl: 'https://example.com/jobs/123?ref=abc' })).success).toBe(true);
+    expect(parse({ originalUrl: 'http://boards.example.org/x' }).originalUrl).toBe(
+      'http://boards.example.org/x',
+    );
+  });
+
+  it('rejects URLs beyond the size limit', () => {
+    const long = `https://example.com/${'a'.repeat(3000)}`;
+    expect(postingUrlSchema.safeParse(long).success).toBe(false);
+  });
+});
+
+describe('size limits and long/noisy descriptions', () => {
+  it('accepts a noisy description VERBATIM (round-trips byte-for-byte)', () => {
+    const noisy =
+      '  Sr. Engineer – Résumé?\r\n\r\n\r\n\tWeird \u0000-free\u2028text • bullets ― dashes\n'.repeat(50);
+    const p = parse({ rawDescription: noisy });
+    expect(p.rawDescription).toBe(noisy); // preserved, not trimmed/normalized
+    expect(noisy.length).toBeLessThan(MAX_RAW_DESCRIPTION_CHARS);
+  });
+
+  it('rejects a description over 100k chars', () => {
+    const long = 'x'.repeat(MAX_RAW_DESCRIPTION_CHARS + 1);
+    expect(jobPostingSchema.safeParse(minimal({ rawDescription: long })).success).toBe(false);
+    expect(
+      jobPostingSchema.safeParse(minimal({ rawDescription: 'x'.repeat(MAX_RAW_DESCRIPTION_CHARS) }))
+        .success,
+    ).toBe(true);
+  });
+
+  it('list fields are capped (item count and per-item length)', () => {
+    const many = Array.from({ length: MAX_LIST_ITEMS + 1 }, (_, i) => `item ${i}`);
+    expect(jobPostingSchema.safeParse(minimal({ skills: many })).success).toBe(false);
+    expect(
+      jobPostingSchema.safeParse(minimal({ responsibilities: ['y'.repeat(1001)] })).success,
+    ).toBe(false);
+    expect(jobPostingSchema.safeParse(minimal({ responsibilities: [''] })).success).toBe(false);
+  });
+});
+
+describe('unknown values are never coerced (enums and ranges stay strict)', () => {
+  it('unknown work arrangement / employment type values are rejected, not guessed', () => {
+    expect(jobPostingSchema.safeParse(minimal({ workArrangement: 'remote-ish' })).success).toBe(false);
+    expect(jobPostingSchema.safeParse(minimal({ employmentType: 'gig' })).success).toBe(false);
+    expect(parse({ workArrangement: 'hybrid' }).workArrangement).toBe('hybrid');
+  });
+
+  it('experience range uses the shared validated range (min<=max, 0..50)', () => {
+    expect(jobPostingSchema.safeParse(minimal({ experienceRange: { minYears: 8, maxYears: 3 } })).success).toBe(false);
+    expect(jobPostingSchema.safeParse(minimal({ experienceRange: { minYears: -1 } })).success).toBe(false);
+    expect(jobPostingSchema.safeParse(minimal({ experienceRange: {} })).success).toBe(false);
+    expect(parse({ experienceRange: { minYears: 3, maxYears: 5 } }).experienceRange).toEqual({
+      minYears: 3,
+      maxYears: 5,
+    });
+  });
+
+  it('compensation is verbatim and only stored when provided', () => {
+    expect(parse({ compensation: '$120k–$150k USD / year' }).compensation).toBe('$120k–$150k USD / year');
+    expect(parse().compensation).toBeUndefined();
+    expect(jobPostingSchema.safeParse(minimal({ compensation: '' })).success).toBe(false);
+  });
+});
+
+describe('source and capture timestamp', () => {
+  it('defaults to manual source; page-capture accepted explicitly', () => {
+    expect(parse().source).toBe('manual');
+    expect(parse({ source: 'page-capture' }).source).toBe('page-capture');
+    expect(jobPostingSchema.safeParse(minimal({ source: 'scraper' })).success).toBe(false);
+  });
+
+  it('createJobPosting fills id and capturedAt without inventing content', () => {
+    const p = createJobPosting(
+      { title: 'Data Engineer', rawDescription: 'Pipelines.', source: 'manual' },
+      () => CAPTURED_AT,
+      () => 'fixed-id',
+    );
+    expect(p.id).toBe('fixed-id');
+    expect(p.capturedAt).toBe(CAPTURED_AT);
+    expect(p.company).toBeUndefined();
+    expect(jobPostingSchema.safeParse(p).success).toBe(true);
+  });
+});
+
+describe('extractJobSections (deterministic, conservative)', () => {
+  const description = [
+    'Senior Frontend Engineer',
+    'Acme Corp — Berlin / Remote',
+    '',
+    'Responsibilities:',
+    '- Build React components',
+    '- Ship features with the team',
+    '• Review code',
+    '',
+    'Requirements:',
+    '5 years of experience with TypeScript',
+    '1. Degree or equivalent experience',
+    '',
+    'Nice to have:',
+    '+ Experience with testing',
+    '',
+    'Skills:',
+    'React, TypeScript, Node.js',
+    'GraphQL',
+    '',
+    'Something unknown: this line belongs to no section',
+    'Compensation: 80k-100k EUR',
+  ].join('\n');
+
+  it('files lines under recognized headings and strips bullet markers', () => {
+    const out = extractJobSections(description);
+    expect(out.responsibilities).toEqual([
+      'Build React components',
+      'Ship features with the team',
+      'Review code',
+    ]);
+    expect(out.requiredQualifications).toEqual([
+      '5 years of experience with TypeScript',
+      'Degree or equivalent experience',
+    ]);
+    expect(out.preferredQualifications).toEqual(['Experience with testing']);
+    expect(out.skills).toEqual(['React', 'TypeScript', 'Node.js', 'GraphQL']);
+  });
+
+  it('never invents: text outside recognized headings stays out of every bucket', () => {
+    const out = extractJobSections(description);
+    const all = Object.values(out).flat().join('\n');
+    expect(all).not.toContain('Something unknown');
+    expect(all).not.toContain('80k-100k');
+    expect(all).not.toContain('Senior Frontend Engineer');
+  });
+
+  it('stops a bucket at an unknown short "Heading:" line', () => {
+    const text = ['Requirements:', '- A skill', 'Benefits:', '- Lots of pizza', '- Remote'].join('\n');
+    const out = extractJobSections(text);
+    expect(out.requiredQualifications).toEqual(['A skill']);
+    expect(out.responsibilities).toEqual([]);
+  });
+
+  it('is robust to noisy input: empty text, CRLF, no headings, over-long lines', () => {
+    expect(extractJobSections('')).toEqual({
+      responsibilities: [],
+      requiredQualifications: [],
+      preferredQualifications: [],
+      skills: [],
+    });
+    const crlf = 'Requirements:\r\n- item one\r\n\r\n- item two\r\n';
+    expect(extractJobSections(crlf).requiredQualifications).toEqual(['item one', 'item two']);
+    // No recognized headings at all -> nothing extracted (raw keeps it all).
+    expect(extractJobSections('We are a great company. Join us!\nAmazing stuff.').responsibilities).toEqual([]);
+    const noisy = `Requirements:\n${'a'.repeat(2000)}`;
+    expect(extractJobSections(noisy).requiredQualifications).toEqual([]); // over-long line skipped
+    const many = ['Requirements:', ...Array.from({ length: 200 }, (_, i) => `- skill ${i}`)].join('\n');
+    expect(extractJobSections(many).requiredQualifications.length).toBeLessThanOrEqual(MAX_LIST_ITEMS);
+  });
+
+  it('is pure: output arrays are new objects, input untouched', () => {
+    const text = 'Skills:\n- React';
+    const a = extractJobSections(text);
+    a.skills.push('mutated');
+    expect(extractJobSections(text).skills).toEqual(['React']);
+  });
+});
+
+describe('upsertPostingInList + record schema', () => {
+  const p = (id: string, title: string): JobPosting => createJobPosting(
+    { title, rawDescription: 'd', source: 'manual' },
+    () => CAPTURED_AT,
+    () => id,
+  );
+
+  it('prepends new postings and replaces existing by id (keeps list size stable)', () => {
+    const a = p('1', 'A');
+    const b = p('2', 'B');
+    let list = upsertPostingInList([], a);
+    list = upsertPostingInList(list, b);
+    expect(list.map((x) => x.id)).toEqual(['2', '1']);
+    const b2 = { ...b, title: 'B edited' };
+    list = upsertPostingInList(list, b2);
+    expect(list).toHaveLength(2);
+    expect(list[0]).toEqual(b2);
+    expect(list[1]).toEqual(a);
+  });
+
+  it('record schema defaults to an empty list and validates round-trip', () => {
+    const empty = jobPostingsRecordSchema.parse({});
+    expect(empty).toEqual({ schemaVersion: '1', postings: [] });
+    const rec = jobPostingsRecordSchema.parse({ postings: [p('1', 'A')] });
+    expect(jobPostingsRecordSchema.parse(rec)).toEqual(rec);
+    expect(jobPostingsRecordSchema.safeParse({ postings: [{ junk: 1 }] }).success).toBe(false);
+  });
+});
