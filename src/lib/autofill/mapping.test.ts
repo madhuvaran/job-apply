@@ -23,6 +23,7 @@ import { buildFillPlan } from './plan';
 import { executeFillPlan } from './execute';
 import {
   MAPPING_CONFIDENCE_THRESHOLD,
+  MAPPING_DISCLOSURE,
   approveMappings,
   availableMappingCategories,
   buildMappingProposal,
@@ -594,5 +595,56 @@ describe('offline boundary', () => {
     expect(fieldDescriptorsSchema.safeParse([{ fieldId: 'x', kind: 'text', value: 'SECRET' }]).success).toBe(
       false,
     );
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Privacy disclosure (Prompt 17 follow-up)                            */
+/* ------------------------------------------------------------------ */
+
+describe('AI mapping privacy disclosure', () => {
+  const text = MAPPING_DISCLOSURE.join(' ');
+
+  it('states the exact minimal data sent, only on explicit request', () => {
+    expect(text).toMatch(/when a provider is configured/i);
+    expect(text).toMatch(/explicitly request/i);
+    expect(text).toMatch(/sends only the selected eligible fields/i);
+    expect(text).toMatch(/normalized labels/i);
+    expect(text).toMatch(/control types/i);
+    expect(text).toMatch(/saved-answer categories/i);
+  });
+
+  it('explains that field labels come from the webpage', () => {
+    expect(text).toMatch(/from the webpage/i);
+    expect(text).toMatch(/may contain text supplied by the website/i);
+  });
+
+  it('lists what is NOT sent', () => {
+    for (const phrase of [
+      'does not send',
+      'field values',
+      'profile',
+      'saved answers',
+      'job description',
+      'HTML',
+      'DOM',
+      'URLs',
+      'sensitive',
+      'legal',
+      'compensation',
+    ]) {
+      expect(text.toLowerCase()).toContain(phrase.toLowerCase());
+    }
+  });
+
+  it('does not make the contradictory blanket "no page content" claim', () => {
+    expect(text).not.toMatch(/any page content/i);
+    expect(text).not.toMatch(/no page content/i);
+  });
+
+  it('is the disclosure the popup renders (no text drift)', () => {
+    const app = readFileSync(join(process.cwd(), 'entrypoints', 'popup', 'App.tsx'), 'utf8');
+    expect(app).toContain('MAPPING_DISCLOSURE');
+    expect(app).not.toMatch(/or any page content/i);
   });
 });

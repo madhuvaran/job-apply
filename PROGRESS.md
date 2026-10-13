@@ -46,6 +46,17 @@ never answers, never fills, and never touches the DOM.
   Cancel clears everything. Since this build configures no provider
   (`MAPPING_PROVIDER = null`), the action reports "unavailable" and fields stay
   manual — the documented integration blocker.
+- **Follow-up (privacy-disclosure fix, committed separately):** the popup
+  AI-mapping disclosure is now an exact, tested constant (`MAPPING_DISCLOSURE` in
+  `mapping.ts`) instead of inline prose. It states that with a configured
+  provider and an explicit request only the selected eligible fields'
+  **normalized labels, control types and available saved-answer category names**
+  are sent; that the labels are **page-derived and may contain website-supplied
+  text**; and exactly what is NOT sent (field values, profile/saved answers, job
+  description, full page HTML/DOM, URLs, sensitive/legal/compensation). The
+  contradictory "no page content / no page text" wording in `README.md` and
+  `docs/autofill-compatibility.md` was corrected. No mapping behavior, schema,
+  permission or provider-configuration change; `MAPPING_PROVIDER` stays `null`.
 - **`src/lib/autofill/mapping.test.ts`** (new, **28 tests**) — AI off ⇒ zero
   calls; scan alone never calls; minimal request shape (no profile/job/settings/
   values/page text); sensitive & non-interactable fields excluded; strict

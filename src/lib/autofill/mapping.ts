@@ -78,6 +78,18 @@ export type AiMappableCategory = (typeof AI_MAPPABLE_CATEGORIES)[number];
 export const MAPPING_INPUT_KINDS = ['text', 'textarea', 'select', 'radio', 'checkbox'] as const;
 export type MappingInputKind = (typeof MAPPING_INPUT_KINDS)[number];
 
+/**
+ * Exact privacy disclosure shown in the popup before the user invokes AI
+ * mapping. Kept here (not inline in the UI) so it is covered by tests and cannot
+ * silently drift. It deliberately names the page-derived field labels as the
+ * ONLY page data sent, and lists everything that is NOT sent.
+ */
+export const MAPPING_DISCLOSURE = [
+  'When a provider is configured and you explicitly request AI suggestions, this sends only the selected eligible fields\u2019 normalized labels, their control types, and the names of the saved-answer categories you have available.',
+  'Those field labels come from the webpage and may contain text supplied by the website.',
+  'It does not send field values, your profile or saved answers, the job description, full page HTML or DOM, URLs, or sensitive, legal, or compensation information.',
+] as const;
+
 /** Fixed reason codes the provider may return (short, bounded, non-executable). */
 export const MAPPING_REASONS = ['label-match', 'synonym', 'context', 'other'] as const;
 export type MappingReason = (typeof MAPPING_REASONS)[number];

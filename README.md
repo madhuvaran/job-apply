@@ -364,10 +364,12 @@ only runs when you explicitly click **Suggest field mappings with AI** — never
 during scanning or page load.
 
 - **What is sent (and only this):** for each eligible field an opaque field id, a
-  short normalized label, the control type, and the fixed list of answer
-  categories **you actually have saved answers for**. No field values, no page
-  text/HTML/DOM, no URLs, no job description, no profile content, no settings,
-  no sensitive data. AI stays off ⇒ **zero** provider calls.
+  short normalized label, the control type, and the names of the answer
+  categories **you actually have saved answers for**. The field labels are the
+  only page-derived data: they come from the webpage and may contain text
+  supplied by the website. **Never sent:** field values, full page text/HTML/DOM,
+  URLs, the job description, profile content, settings, or sensitive data. AI
+  stays off ⇒ **zero** provider calls.
 - **Eligible:** ambiguous/unsupported, interactable, single-valued fields with a
   usable non-sensitive label.
 - **Never sent / never mapped:** passwords & authentication codes, payment/bank

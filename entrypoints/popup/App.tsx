@@ -20,6 +20,7 @@ import type { AiProvider } from '../../src/lib/ai';
 import {
   AUTOFILL_FILL_REQUEST_TYPE,
   AUTOFILL_SCAN_REQUEST_TYPE,
+  MAPPING_DISCLOSURE,
   approveMappings,
   buildFillPlan,
   eligibleMappingFields,
@@ -475,11 +476,16 @@ function App() {
             <div className="af-ai">
               <h2 className="af-heading">AI-assisted mapping (optional)</h2>
               <p className="hint small">
-                Only the field <strong>labels</strong>, the control type, and the list of answer
-                categories you have saved are sent to your configured provider — never field
-                values, your profile, the job description, or any page content. AI only suggests
-                which saved answer a field belongs to; you approve each one, and only then does the
-                usual review and confirm step apply.
+                {MAPPING_DISCLOSURE.map((line, index) => (
+                  <span key={line}>
+                    {line}
+                    {index < MAPPING_DISCLOSURE.length - 1 ? ' ' : ''}
+                  </span>
+                ))}
+              </p>
+              <p className="hint small">
+                AI only suggests which saved answer category a field belongs to; you approve each
+                one, and only then does the usual review and confirm step apply.
               </p>
               {aiState.status === 'idle' && (
                 <button type="button" onClick={() => void onAiSuggest()}>

@@ -141,8 +141,8 @@ never produces an answer or a DOM action.
 |---|---|
 | Default | **Off** (`aiEnabled:false`) — zero provider/network calls. |
 | Trigger | Explicit **"Suggest field mappings with AI"** in the popup; never on scan/load. |
-| Request contents | Per eligible field: opaque `fieldId`, short normalized `label`, control `kind`, plus the fixed list of categories the user has saved answers for. **Nothing else.** |
-| Never sent | Field values, page text/HTML/DOM, URLs, job description, profile/settings, employer content, sensitive data, API keys. |
+| Request contents | Per eligible field: opaque `fieldId`, short normalized `label`, control `kind`, plus the names of the categories the user has saved answers for. The `label` is page-derived and may contain text supplied by the website. **Nothing else.** |
+| Never sent | Field values, full page text/HTML/DOM, URLs, job description, profile/settings, employer content, sensitive/legal/compensation data, API keys. (The field `label` is the only page-derived data — see Request contents.) |
 | Eligible | Ambiguous/unsupported, interactable, single-valued, non-sensitive label, not a custom combobox. |
 | Never eligible/mapped | Password/auth, OTP, payment/bank, CAPTCHA, legal/consent, compensation, EEO/voluntary, **work authorization / sponsorship**, multi-select, hidden/disabled/read-only. |
 | Response | Fixed category enum + bounded confidence (0–1) + fixed reason code (strict schema). |
