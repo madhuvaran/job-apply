@@ -30,8 +30,11 @@
   no sensitive import.
 - **`src/lib/resume/pdf/download.ts`** (new) — `downloadBlob(blob, filename,
   env?)` with an injectable browser environment: creates a temporary object
-  URL, clicks a hidden anchor, removes it, and ALWAYS revokes the URL (even if
-  the click throws). Stores nothing.
+  URL, clicks a hidden anchor, and removes the anchor promptly. On success the
+  URL is revoked AFTER a short delay (`OBJECT_URL_REVOKE_DELAY_MS`, 10 s) so the
+  browser can initiate the download before the Blob is released; on any
+  setup/click failure the anchor is removed and the URL is revoked immediately.
+  Stores nothing. (See the follow-up reliability fix at the end of this entry.)
 - **`src/lib/resume/pdf/export.ts`** (new) — `generateAndDownloadResume(profile,
   job, deps?)` pipeline extracted from React so it is testable: tailor →
   render → download, each failure a typed outcome with a FIXED, safe message
@@ -45,7 +48,7 @@
   (disabled + `aria-busy` while generating or when no profile is loaded). Uses
   the AI-safe `profile` already loaded by the panel; match-summary behavior is
   untouched. `style.css` gained a small `.resume-export` block.
-- **Tests** (5 new files, **47 tests**; suite **398 passing (22 files)**):
+- **Tests** (5 new files, **49 tests**; suite **400 passing (22 files)**):
   `render.test.ts` (16) — valid render + filename/page count, selectable text
   and NO image XObject, absent-section handling (no stray headings), 90-bullet
   multi-page flow with every bullet + footer present, byte-identical
@@ -63,14 +66,17 @@
   dedupe, conditional rule, heading kept with first line, tall-paragraph page
   split with no dropped lines. `text.test.ts` (8) — normalization + punctuation
   table, Latin-1 preservation, code-point detection/format. `download.test.ts`
-  (4) — URL created/clicked/revoked, revoke on click throw, typed failure
+  (6) — anchor removed promptly + revocation DEFERRED (asserted not-called before
+  `vi.runAllTimers()`, then called once with the created URL via fake timers),
+  immediate single revoke when the click throws (no duplicate timer), cleanup on
+  DOM-setup failure, no anchor/revoke when URL creation fails, typed failure
   without a browser env, no storage writes.
 - **`README.md`** — new "Resume PDF export (fixed layout, ATS-friendly)"
   section (dependency rationale, integrity guarantees, limitations) and the
   tailoring heading/roadmap updated (PDF renderer now built).
 
 ### Commands run this task (exit statuses captured inline)
-- `npx vitest run` → **exit 0, 398/398 passed** (351 baseline + 47 new)
+- `npx vitest run` → **exit 0, 400/400 passed** (351 baseline + 49 new)
 - `npm run compile` → **exit 0**
 - `npm run build` → **exit 0**; built manifest unchanged:
   `permissions = ["storage", "activeTab", "scripting"]`, no `host_permissions`
@@ -89,6 +95,26 @@
 - The options chunk grows (~515 kB minified) because pdf-lib is bundled into
   the options page; acceptable for an options-only feature, not code-split yet.
 - Nothing claims the PDF passes any specific employer's ATS.
+
+### Follow-up reliability fix (2026-10-13, task 14b: deferred PDF object-URL revocation)
+- **Problem:** `downloadBlob` revoked the temporary Blob object URL synchronously
+  in a `finally` right after `anchor.click()`, which can cancel the download
+  because the browser resolves Blob URLs asynchronously.
+- **Fix (`src/lib/resume/pdf/download.ts`):** the anchor is still removed
+  promptly, but on success the object URL is revoked via
+  `setTimeout(..., OBJECT_URL_REVOKE_DELAY_MS)` (10 s — comfortably longer than
+  local Blob resolution while releasing the small resume Blob promptly; `file-saver`
+  uses a more conservative 40 s for the same reason). On URL-creation / DOM-setup /
+  click failure the anchor is removed and the URL is revoked immediately exactly
+  once (no leak, no pending timer). Public API, filename, renderer, tailoring,
+  manifest permissions and UI are unchanged.
+- **Tests (`download.test.ts`, now 6):** deferred revocation verified with Vitest
+  fake timers (`not.toHaveBeenCalled()` before `vi.runAllTimers()`, then one call
+  with the created URL), plus cleanup on click throw / DOM-setup failure / URL-
+  creation failure and no duplicate revocation after flushing timers.
+- `npx vitest run` → **exit 0, 400/400 passed**; `npm run compile` → **exit 0**;
+  `npm run build` → **exit 0**; manifest unchanged
+  (`permissions = ["storage", "activeTab", "scripting"]`).
 
 ### Next
 - Wire the AI interface into a user-visible feature and/or application form
