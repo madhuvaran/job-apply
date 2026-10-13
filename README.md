@@ -367,9 +367,10 @@ during scanning or page load.
   short normalized label, the control type, and the names of the answer
   categories **you actually have saved answers for**. The field labels are the
   only page-derived data: they come from the webpage and may contain text
-  supplied by the website. **Never sent:** field values, full page text/HTML/DOM,
-  URLs, the job description, profile content, settings, or sensitive data. AI
-  stays off ⇒ **zero** provider calls.
+  supplied by the website. **Never sent:** field values, applicant profile data,
+  your saved answers themselves, full page text/HTML/DOM, URLs, the job
+  description, or sensitive/legal/compensation information. AI stays off ⇒
+  **zero** provider calls.
 - **Eligible:** ambiguous/unsupported, interactable, single-valued fields with a
   usable non-sensitive label.
 - **Never sent / never mapped:** passwords & authentication codes, payment/bank

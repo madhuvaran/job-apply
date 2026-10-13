@@ -12,7 +12,8 @@
  * - The request carries only the minimum: an opaque field id, a short
  *   normalized label, the control kind, and the fixed list of answer categories
  *   the user actually has saved answers for. NO field values, no profile/job
- *   text, no DOM/HTML, no URLs, no employer content, no sensitive data.
+ *   text, no DOM/HTML, no URLs, no page content beyond the selected eligible
+ *   fields' normalized labels, no sensitive data.
  * - Exclusions win: password/auth, OTP, payment/bank, CAPTCHA, EEO/voluntary,
  *   compensation, legal/consent, work-authorization/sponsorship, multi-select,
  *   hidden/disabled/read-only, and already-recognised fields are NEVER sent.
@@ -87,7 +88,7 @@ export type MappingInputKind = (typeof MAPPING_INPUT_KINDS)[number];
 export const MAPPING_DISCLOSURE = [
   'When a provider is configured and you explicitly request AI suggestions, this sends only the selected eligible fields\u2019 normalized labels, their control types, and the names of the saved-answer categories you have available.',
   'Those field labels come from the webpage and may contain text supplied by the website.',
-  'It does not send field values, your profile or saved answers, the job description, full page HTML or DOM, URLs, or sensitive, legal, or compensation information.',
+  'It does not send field values, your profile data or your saved answers, the job description, full page HTML or DOM, URLs, or sensitive, legal, or compensation information.',
 ] as const;
 
 /** Fixed reason codes the provider may return (short, bounded, non-executable). */

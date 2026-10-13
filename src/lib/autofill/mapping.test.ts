@@ -482,6 +482,35 @@ describe('provider failure handling', () => {
     expect(provider.calls.length).toBe(0);
   });
 
+  it('an unavailable provider does not interrupt deterministic autofill', async () => {
+    const { descriptors, registry } = scan(
+      '<label for="em">Email</label><input id="em" type="email" />' +
+        '<label for="pn">Preferred name</label><input id="pn" />',
+    );
+    const result = await requestMappingProposal({
+      descriptors,
+      profile,
+      sensitive,
+      settings: enabledSettings(),
+      scanId: 's1',
+      provider: null,
+    });
+    expect(result.kind).toBe('provider-unavailable');
+
+    // Deterministic planning/filling is unaffected: the recognized email field
+    // still fills; the ambiguous field stays manual.
+    const built = buildFillPlan({ descriptors, profile, sensitive });
+    if (!built.ok) throw new Error('expected ok');
+    expect(built.plan.instructions.find((i) => i.fieldId === 'af-0')).toMatchObject({
+      category: 'email',
+      value: 'ada@example.invalid',
+    });
+    const filled = executeFillPlan(built.plan, registry);
+    if (!filled.ok) throw new Error('expected ok');
+    expect((document.getElementById('em') as HTMLInputElement).value).toBe('ada@example.invalid');
+    expect((document.getElementById('pn') as HTMLInputElement).value).toBe('');
+  });
+
   it('maps a rate-limit failure to a typed error', async () => {
     const provider = spyProvider(() => ({ kind: 'failure', failure: { kind: 'rate-limited', retryAfterMs: 1000 } }));
     const result = await run(provider);

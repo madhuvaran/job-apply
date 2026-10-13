@@ -1,5 +1,49 @@
 # PROGRESS
 
+## Done (2026-10-13, task 20 / Prompt 18: AI mapping provider readiness & privacy wording)
+Documentation/wording alignment plus a small provider-readiness audit. No
+mapping behavior, schema, permission or provider-configuration change.
+- **Privacy wording fix** — `docs/autofill-compatibility.md` *Never sent* row now
+  reads "Page content beyond the selected eligible fields' normalized labels."
+  (replacing "employer content") and lists field values, full page
+  text/HTML/DOM, URLs, job description, profile data, saved answers, settings,
+  sensitive/legal/compensation data and API keys. `README.md` "What is sent"
+  bullet and the `MAPPING_DISCLOSURE` constant + `mapping.ts` header comment were
+  aligned so nothing claims that no webpage-derived content is sent (the
+  normalized field labels ARE page-derived and may contain website text).
+- **Provider readiness audit (unchanged, confirmed):**
+  - `MAPPING_PROVIDER` stays `null` — no endpoint, credential or live provider.
+  - The popup shows a clear unavailable message when no provider is configured.
+  - `requestMappingProposal` short-circuits `ai-disabled` / `provider-unavailable`
+    BEFORE building or sending; deterministic autofill continues and fields stay
+    manual.
+  - AI stays OFF by default (`aiEnabled:false`, zero calls); scanning never calls
+    the provider.
+  - No API key/secret in code, settings or storage; no direct third-party API,
+    no new host/manifest permission, no telemetry, no new service.
+  - Failures are typed, single-attempt, fixed-message (no silent provider
+    fallback, no page content in errors/logs).
+- **Test** — one targeted test added (`mapping.test.ts`): an unavailable provider
+  leaves the recognized field filling via the deterministic planner/executor
+  while the ambiguous field stays manual. No existing tests duplicated.
+
+### Commands run this task (exit statuses captured inline)
+- `npx vitest run` → **exit 0, 579/579 passed** (35 files; 578 baseline + 1 new)
+- `npm run compile` → **exit 0**
+- `npm run build` → **exit 0**; built manifest unchanged:
+  `permissions = ["storage", "activeTab", "scripting"]`, **no** `host_permissions`
+
+### Limitations / not independently verified
+- Live provider integration is **not** implemented (explicitly out of scope);
+  the AI path remains exercised only by unit tests with a mock/spy provider.
+- No real-browser or live-endpoint testing.
+
+### Next
+- A separately scoped task may wire a real backend-proxy provider endpoint; until
+  then AI mapping stays unavailable and autofill stays fully deterministic.
+
+---
+
 ## Done (2026-10-13, task 19 / Prompt 17: opt-in AI-assisted field mapping)
 A NARROW semantic-suggestion layer for fields the deterministic classifier cannot
 confidently recognise. AI maps a field to an EXISTING saved-answer category; it
