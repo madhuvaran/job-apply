@@ -10,6 +10,11 @@
  * - Unknown/missing values stay blank (never guessed): company, location,
  *   URL, work arrangement, employment type, experience range, compensation.
  * - Captured jobs from the popup appear in the same list (source labelled).
+ * - "Estimate match" (Prompt 10) selects a saved job and renders the
+ *   deterministic match summary (Options → Jobs). Matching runs offline via
+ *   `calculateJobMatch` over the AI-safe profile + selected posting + loaded
+ *   settings; the sensitive profile is never read here. The summary
+ *   recalculates automatically when the selection or inputs change.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -19,14 +24,24 @@ import {
   validateJobPostingInput,
   type JobPosting,
 } from '../../src/lib/job-posting';
-import { loadJobPostings, resetJobPostings, upsertJobPosting } from '../../src/lib/storage';
 import {
+  loadJobPostings,
+  loadProfile,
+  loadSettings,
+  resetJobPostings,
+  upsertJobPosting,
+} from '../../src/lib/storage';
+import {
+  defaultSettings,
   EMPLOYMENT_TYPES,
   WORK_MODES,
   type EmploymentType,
+  type Settings,
   type WorkMode,
 } from '../../src/lib/settings';
+import type { Profile } from '../../src/lib/profile';
 import { Row, Section } from './ui';
+import MatchSummary from './MatchSummary';
 
 interface FormState {
   title: string;
@@ -91,6 +106,12 @@ export default function JobsPanel() {
   const [errors, setErrors] = useState<string[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
+  // Match summary (Prompt 10): selection + the AI-safe inputs it needs.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [profileState, setProfileState] = useState<'loading' | 'ready'>('loading');
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [settingsState, setSettingsState] = useState<'loading' | 'ready'>('loading');
 
   const refresh = useCallback(async () => {
     const res = await loadJobPostings();
@@ -112,6 +133,32 @@ export default function JobsPanel() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Load the AI-safe profile and job settings for the match summary once.
+  // Corrupt/failed settings are surfaced as `null` (no threshold is guessed);
+  // an absent profile is `null` and the summary explains what to do. Corrupt
+  // stored data is never overwritten by this read path.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const [profileRes, settingsRes] = await Promise.all([loadProfile(), loadSettings()]);
+      if (cancelled) return;
+      setProfile(profileRes.ok ? profileRes.data : null);
+      setProfileState('ready');
+      if (settingsRes.ok) {
+        setSettings(settingsRes.data);
+      } else if (settingsRes.reason === 'absent') {
+        // Schema default (minMatchThreshold 0 = filtering off) — documented behavior.
+        setSettings(defaultSettings());
+      } else {
+        setSettings(null);
+      }
+      setSettingsState('ready');
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const set = useCallback(<K extends keyof FormState>(key: K, value: FormState[K]) => {
     setForm((f) => ({ ...f, [key]: value }));
@@ -225,6 +272,13 @@ export default function JobsPanel() {
     [postings],
   );
 
+  // Selected posting for the match summary (selection follows the list, so a
+  // reset or removal simply clears the summary — nothing stale is rendered).
+  const selectedPosting = useMemo(
+    () => (selectedId === null ? undefined : postings.find((p) => p.id === selectedId)),
+    [postings, selectedId],
+  );
+
   return (
     <div className="jobs-panel">
       {loadState === 'loading' && <div className="banner banner-info">Loading jobs…</div>}
@@ -280,10 +334,37 @@ export default function JobsPanel() {
                     </span>
                   )}
                 </div>
-                <button type="button" onClick={() => startEdit(p)}>Edit</button>
+                <div className="job-item-actions">
+                  <button
+                    type="button"
+                    aria-pressed={selectedId === p.id}
+                    onClick={() => setSelectedId((current) => (current === p.id ? null : p.id))}
+                  >
+                    {selectedId === p.id ? 'Hide match' : 'Estimate match'}
+                  </button>
+                  <button type="button" onClick={() => startEdit(p)}>Edit</button>
+                </div>
               </div>
             ))}
           </Section>
+          {selectedPosting !== undefined && (
+            <Section title={`Match estimate — ${selectedPosting.title}`}>
+              {profileState === 'loading' || settingsState === 'loading' ? (
+                <p className="hint">Loading match inputs…</p>
+              ) : (
+                <>
+                  <MatchSummary profile={profile} job={selectedPosting} settings={settings} />
+                  <button
+                    type="button"
+                    className="match-clear"
+                    onClick={() => setSelectedId(null)}
+                  >
+                    Clear selection
+                  </button>
+                </>
+              )}
+            </Section>
+          )}
           <footer className="options-footer">
             <button type="button" className="primary" onClick={startCreate}>Add job manually</button>
           </footer>

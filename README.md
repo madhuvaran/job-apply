@@ -42,7 +42,15 @@ tabs; everything is stored **locally** via `chrome.storage.local`:
   verbatim), deterministic "Extract sections" for responsibilities /
   qualifications / skills, and optional work arrangement, employment type,
   experience range and compensation exactly as posted. Unknown fields stay blank —
-  nothing is guessed.
+  nothing is guessed. **Estimate match** selects a saved job and renders the
+  deterministic match summary (see below): the score is labelled an estimate,
+  confidence/completeness and assessable scoring weight appear as separate
+  badges, and matched / partial / missing (confirmed) / unknown requirements
+  are listed in distinct groups — unknowns are never shown as missing. The
+  summary recalculates when you select a different job or when profile,
+  posting or settings inputs change; missing profile, missing job, invalid
+  input and insufficient data each show an honest message instead of a
+  misleading number.
 
 ## Capture current job (popup)
 
@@ -192,7 +200,7 @@ extension (see the backend-proxy pattern above).
 Phased plan lives in `PROGRESS.md`. Done so far: profile + evidence schema,
 validated storage service, profile editor, settings & privacy model, job-posting
 model with manual intake, user-triggered current-page capture, the
-provider-agnostic AI interface (Prompt 06), and the deterministic job match
-estimate (Prompt 09 — library + tests; formula above). **Not yet built:
-resume tailoring, the match dashboard UI, and any wiring of the AI interface
-into features.**
+provider-agnostic AI interface (Prompt 06), the deterministic job match
+estimate (Prompt 09 — library + tests; formula above), and its match summary
+UI in Options → Jobs (Prompt 10). **Not yet built: resume tailoring and any
+wiring of the AI interface into features.**

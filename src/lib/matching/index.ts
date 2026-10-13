@@ -27,3 +27,20 @@ export {
   CONFIDENCE_MEDIUM_MIN,
   type JobMatchOutcome,
 } from './estimate';
+export {
+  buildMatchSummaryView,
+  missingJobView,
+  missingProfileView,
+  matchSummaryFromResult,
+  settingsUnavailableView,
+  CATEGORY_LABELS,
+  REQUIREDNESS_LABELS,
+  SEVERITY_LABELS,
+  STATUS_LABELS,
+  type FactorView,
+  type HardIssueView,
+  type MatchSummaryStatus,
+  type MatchSummaryView,
+  type RequirementGroupView,
+  type RequirementView,
+} from './presenter';

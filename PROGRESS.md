@@ -1,5 +1,108 @@
 # PROGRESS
 
+## Done (2026-10-13, task 12 / Prompt 10: match summary UI in Options → Jobs)
+- **`src/lib/matching/presenter.ts`** (new) — pure view-model layer between
+  the matcher and React: `buildMatchSummaryView(outcome)` /
+  `matchSummaryFromResult(result)` turn the existing result contract into a
+  flat `MatchSummaryView` (labels only — NO new scoring logic, every number
+  and explanation copied verbatim from `calculateJobMatch`'s output). Exposes
+  the estimate, and shows confidence, completeness and assessable weight as
+  SEPARATE fields (`Confidence: High confidence`, `75% completeness (6 of 8
+  items decidable)`, `90 of 100 points assessable (a score needs at least
+  40)`). All four requirement groups always exist in status order with
+  distinct labels/descriptions — unknown's description states "NOT a
+  confirmed gap; absence of evidence never counts against you" and
+  `STATUS_LABELS.unknown ('Unknown (not verified)') !==
+  STATUS_LABELS.missing ('Missing (confirmed gap)')`. State constructors for
+  `missing-profile` / `missing-job` / `settings-unavailable` / `invalid`
+  (typed path+code issues) / `insufficient-data` (reason + "No numeric score
+  is shown" message, `score: null`, context badges kept) — a numeric score is
+  NEVER shown unless the outcome is a real score. Exported from the matching
+  index.
+- **`entrypoints/options/MatchSummary.tsx`** (new) — thin presentational
+  component (no new framework/dependency): resolves props → view via
+  `resolveMatchView(profile, job, settings)` (calls `calculateJobMatch`
+  inside a `useMemo`, so it recalculates whenever the selected job, profile
+  or settings prop changes) and renders: score with an "estimate" tag +
+  aria-label, the four badge fields, hard-requirement checks with severity
+  badges (confirmed/potential/unknown), the four status groups as lists with
+  per-item status chips + category + requiredness + the contract's
+  explanation, the scoring-factor table (weight / score / why), and the
+  result summary. `section[aria-label="Match estimate"]` + `data-status` /
+  `data-field` / `data-severity` attributes for accessible, non-brittle
+  semantics. Offline: no fetch, no AI import, props are AI-safe only.
+- **`entrypoints/options/JobsPanel.tsx`** — integrated into the existing Jobs
+  tab: each saved job gains an **Estimate match / Hide match**
+  (`aria-pressed`) button; the selected posting renders in a
+  `Match estimate — <title>` section below the list ("Clear selection"
+  resets). Inputs loaded with the project's existing storage patterns:
+  `loadProfile()` (AI-safe record ONLY — `loadSensitiveProfile` is never
+  called) and `loadSettings()` once on mount (`Promise.all`); absent settings
+  fall back to the schema default (threshold 0 = off, documented behavior),
+  malformed/unavailable settings pass `null` → honest
+  "settings-unavailable" state (no threshold is guessed), corrupt stored data
+  is never overwritten by the read path. A selection that disappears (reset/
+  removal) simply stops rendering — nothing stale. Selection state is plain
+  React state; no app-wide state or storage writes were added.
+- **`entrypoints/options/style.css`** — `.job-item-actions` + match-summary
+  styles; the four status chips: matched green, partial amber, missing red,
+  **unknown gray with a dashed border** so unknown can never visually read as
+  missing (mirrors the label distinction).
+- **Tests** (2 new files, 28 tests):
+  `src/lib/matching/presenter.test.ts` (12) — estimate/confidence/
+  completeness/assessable-weight/threshold exposed as distinct fields (score
+  pinned at 94 to catch formula drift — formula NOT changed in this task),
+  all four groups in order with contract-identical labels/explanations,
+  unknown group labeled "Unknown (not verified)" + "NOT a confirmed gap" and
+  never "Missing", hard-issue severity labels, insufficient-data (score null,
+  messages, badges kept), invalid input (typed issues, no score/groups), all
+  three missing-input states, factor rows (`Not assessable` for unknown),
+  and salary/compensation strings absent from the view JSON.
+  `src/lib/matching/match-summary-ui.test.ts` (16) — component rendered with
+  `react-dom/server` (no new dependency; assertions target labels/
+  data-attributes, not incidental markup): score "94 / 100" + "estimate" tag
+  + caption "not an employer ATS score", confidence/completeness/weight/
+  threshold badges, factor table; all four groups with the Kubernetes item
+  in `data-status="unknown"` labeled "Unknown (not verified)" (never
+  "Missing (confirmed gap)"), master's-degree item in `data-status="missing"`
+  labeled "Missing (confirmed gap)"; insufficient-data/invalid/missing
+  profile/no job/unavailable settings each render WITHOUT a score element;
+  profile change (strong → sparse) and job change alter the rendered output;
+  zero network calls during render (fetch spy); salary/compensation values
+  absent from markup. Suite: **314 tests passing (15 files)**.
+- **`README.md`** — Jobs tab bullet documents the Estimate match flow and
+  honest states; roadmap line updated.
+
+### Commands run this task (exit statuses captured inline)
+- `npm ci` → exit 0 (node_modules absent again after workspace restore)
+- `npx vitest run` → **exit 0, 314/314 passed** (286 baseline + 28 new)
+- `npm run compile` → **exit 0**
+- `npm run build` → **exit 0**; built manifest unchanged:
+  `permissions = ["storage", "activeTab", "scripting"]`, no `host_permissions`
+
+### Limitations / known issues
+- Profile and settings load ONCE per Jobs-panel mount (existing storage
+  pattern — no storage change listener): an edit made in another tab is picked
+  up on the next mount/reload, not live. Selection/profile/settings changes
+  within the panel recalculate immediately via `useMemo`.
+- The summary renders in the list view only (not inside the edit form);
+  editing a posting then returning to the list refreshes it from storage.
+- Component tests use `react-dom/server` string rendering (no testing-library,
+  per no-new-dependencies); interaction testing (button clicks, selection
+  toggling) is covered indirectly through JobsPanel's simple state wiring —
+  no browser e2e run (consistent with the rest of the project).
+- The score is an integer-pinned regression value in tests (94 for the
+  standard fixture); if Prompt 09 weights/vocabulary ever change, that pin
+  must be updated deliberately — the formula itself was NOT touched here.
+- `README`'s formula section still describes Prompt 09 scope; no scoring,
+  vocabulary, weights or threshold behavior changed in this task.
+
+### Next
+- Resume tailoring (Prompt 11+) once this UI is reviewed; optionally wire the
+  AI layer later with a stored backend endpoint.
+
+---
+
 ## Done (2026-10-13, task 11 / Prompt 09: deterministic job match estimate)
 - **`src/lib/matching/`** (new, 6 files) — an isolated, OFFLINE, deterministic
   matching engine. `calculateJobMatch(profile, job, settings)` reuses the
