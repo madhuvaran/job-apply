@@ -70,6 +70,9 @@ function App() {
   // Autofill review state (held in memory only; never stored).
   const [afReview, setAfReview] = useState<PlanReviewEntry[]>([]);
   const [afPlan, setAfPlan] = useState<FillPlan | null>(null);
+  // Session token from the scan that produced afPlan; a fill is only accepted
+  // by the page for this exact scan (stale/tampered requests are rejected).
+  const [afScanId, setAfScanId] = useState<string | null>(null);
   const [afSummary, setAfSummary] = useState<AfSummary | null>(null);
 
   const fail = useCallback((message: string) => {
@@ -157,6 +160,7 @@ function App() {
     setErrorText(null);
     setAfReview([]);
     setAfPlan(null);
+    setAfScanId(null);
     setAfSummary(null);
     setStage('af-scanning');
     try {
@@ -192,6 +196,7 @@ function App() {
       }
       setAfReview(built.review);
       setAfPlan(built.plan);
+      setAfScanId(scan.value.scanId);
       setStage('af-preview');
     } catch {
       fail('Could not reach this tab. Re-open the popup and try again.');
@@ -200,14 +205,18 @@ function App() {
 
   /* ---------------- autofill: execute (after explicit confirm) ---------------- */
   const onAutofillConfirm = useCallback(async () => {
-    if (afPlan === null) return;
+    if (afPlan === null || afScanId === null) return;
     setStage('af-filling');
     try {
       const tab = await activeTab();
       if (tab === null) return;
       let response: unknown;
       try {
-        response = await sendToTab(tab.tabId, { type: AUTOFILL_FILL_REQUEST_TYPE, plan: afPlan });
+        response = await sendToTab(tab.tabId, {
+          type: AUTOFILL_FILL_REQUEST_TYPE,
+          scanId: afScanId,
+          plan: afPlan,
+        });
       } catch {
         fail('Chrome blocked filling this page. Nothing was changed.');
         return;
@@ -218,7 +227,11 @@ function App() {
         return;
       }
       if (parsed.value.kind === 'error') {
-        fail('The fill plan could not be applied. Nothing was changed.');
+        fail(
+          parsed.value.code === 'stale-session'
+            ? 'The form changed since it was scanned. Nothing was changed — reopen the popup and scan again.'
+            : 'The fill plan could not be applied. Nothing was changed.',
+        );
         return;
       }
       const report = parsed.value.report;
@@ -227,11 +240,12 @@ function App() {
     } catch {
       fail('Could not reach this tab. Nothing was changed.');
     }
-  }, [activeTab, afPlan, fail, sendToTab]);
+  }, [activeTab, afPlan, afScanId, fail, sendToTab]);
 
   const onAutofillCancel = useCallback(() => {
     setAfReview([]);
     setAfPlan(null);
+    setAfScanId(null);
     setAfSummary(null);
     setStage('idle'); // nothing was written or filled
   }, []);

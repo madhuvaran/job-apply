@@ -1,5 +1,78 @@
 # PROGRESS
 
+## Done (2026-10-13, task 17 / Prompt 15: autofill hardening & compatibility)
+- **`src/lib/autofill/execute.ts`** (hardened) — reliability + safety:
+  - Controlled inputs: text/textarea/select writes go through the element's
+    **native prototype value setter** (NOT any instance-level setter a framework
+    installs), so React-style controlled inputs observe the change; bubbling
+    `input` + `change` are fired. No React internals, no validation bypass.
+  - **Post-fill verification**: every write is read back against the intended
+    state; a write that did not take effect returns the new typed
+    `verify-failed` status and emits **no** events instead of claiming success.
+  - Selects: candidate options exclude placeholders (`Select one`, empty value,
+    disabled/hidden) and disabled options; an ambiguous/absent match stays
+    `no-match` — the first option is never chosen just because it exists.
+  - Radio groups scoped by (form, `name`); a checkbox/radio already in the
+    planned state is left untouched (no unnecessary toggle, no event).
+    Post-fill state is verified before success.
+  - Gates add `inert` subtrees and `[hidden]`/`aria-hidden` ancestors alongside
+    disabled/read-only/`display:none`/`visibility:hidden`/disconnected.
+  - Fixed, value-free per-field messages (new `verify-failed` literal added to
+    `FILL_STATUSES` in `schemas.ts`).
+- **`src/lib/autofill/page.ts`** (hardened) — scan→fill session binding: each
+  successful scan mints a `scanId` (returned in the scan response); the fill
+  request must echo the CURRENT token (`autofillFillRequestSchema` now requires
+  `scanId`). A missing/unknown/after-rescan token is rejected with a typed
+  `stale-session` (or `invalid-plan`) error and **no writes**. Shaped-but-tampered
+  scan/fill payloads are rejected with typed errors instead of being treated as
+  foreign messages. Element references stay in memory for one round trip only.
+- **`entrypoints/popup/App.tsx`** — carries `scanId` from scan → confirm, sends
+  it with the fill request, and surfaces a distinct stale-session message;
+  cancel/restart clear it. Confirmation requirement unchanged.
+- **Tests** (2 new files, **23 tests**; suite **523 passing (33 files)**):
+  `hardening.test.ts` (12) — React-controlled input/textarea native-setter +
+  bubbling events; `verify-failed` with no events; placeholder never selected;
+  real option still selected; ambiguous select unchanged; radio-group isolation;
+  already-checked checkbox not toggled; unchecked checkbox checked once;
+  disabled/read-only/hidden/inert/disconnected skipped; no submit/click; error
+  messages carry no values. `session.test.ts` (11) — scanId minted; matching
+  token fills; stale token after re-scan rejected; unknown/absent token rejected;
+  tampered payload rejected; fill before scan rejected; cancel writes nothing;
+  foreign messages ignored; scanned element identity preserved when the form
+  structure changes; replaced element → `disconnected` and left untouched;
+  error responses never contain a planned value. Existing autofill, matching,
+  tailoring, PDF, application-log and storage suites unchanged and passing.
+- **`README.md`** — autofill section documents the hardening (native setter +
+  verification, placeholder/state rules, per-scan session token) and its limits.
+
+### Commands run this task (exit statuses captured inline)
+- `npx vitest run` → **exit 0, 523/523 passed** (500 baseline + 23 new)
+- `npm run compile` → **exit 0**
+- `npm run build` → **exit 0**; built manifest unchanged:
+  `permissions = ["storage", "activeTab", "scripting"]`, **no** `host_permissions`
+- Pre-commit inspection: no secrets, `.env`, `node_modules` or build artifacts
+  staged; content-script `matches` unchanged; matching/tailoring/PDF/
+  application-log sources were NOT modified; `wxt.config.ts` untouched.
+
+### Limitations / known issues
+- Verified with jsdom + pure unit tests only. **jsdom does not reproduce a real
+  browser**: no native constraint validation, no real event loop/framework
+  render cycle, no layout for visibility heuristics. Compatibility with any
+  specific site is NOT claimed.
+- Controlled-input handling uses the documented native-setter + events
+  technique; a framework that re-renders from its own state could still revert
+  a value — the executor only verifies the immediate post-write state.
+- Session binding is per content-script session/tab; a page navigation between
+  scan and fill yields `disconnected` (removed nodes) and must be re-scanned.
+- `AutofillScanResponse | AutofillFillResponse` still share a `kind: 'ok'`
+  variant; consumers narrow by property. Unchanged from Prompt 14.
+
+### Next
+- Workday-specific field handling and/or AI-assisted semantic mapping (with the
+  existing backend-proxy AI interface), keeping autofill local and confirmed.
+
+---
+
 ## Done (2026-10-13, task 16 / Prompt 14: deterministic autofill foundation)
 - **`src/lib/autofill/schemas.ts`** (new) — `.strict()` contracts: VALUE-FREE
   `fieldDescriptorSchema` (fieldId, kind text/textarea/select/radio/checkbox,

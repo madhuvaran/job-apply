@@ -327,10 +327,28 @@ radio and checkbox fields are filled only on an unambiguous match; disabled,
 read-only, hidden and detached fields are skipped. The form is never submitted
 and no navigation is triggered.
 
+**Reliability (hardened):** text/textarea/select values are written through the
+element's **native value setter** — not any instance-level setter a framework
+installs — followed by bubbling `input` + `change` events, so React-style
+controlled inputs observe the change without using framework internals or
+bypassing validation. Every write is then **verified**: a value that did not
+take effect returns a typed `verify-failed` result and fires no events, so
+success is never claimed for a write the page rejected. Dropdown placeholders
+("Select one", empty or disabled options) never count as answers and the first
+option is never chosen just because it exists; radio groups are scoped by
+(form, `name`); and a checkbox/radio already in the planned state is left
+untouched. Each scan mints a session token that the confirmed fill must echo, so
+a plan can only be applied to the scan that produced it — after the form changes
+you must scan and confirm again. Disabled, read-only, hidden, `inert` and
+disconnected fields are skipped.
+
 **Integration limits:** this uses the existing `activeTab` + `scripting`
 permission model and the current content-script channel — no new permissions
-and no host-permission broadening. **Workday-specific handling and AI-assisted
-semantic field mapping are NOT implemented** in this task.
+and no host-permission broadening. Reliability is verified with jsdom unit tests
+only; jsdom does not reproduce a real browser (no native constraint validation,
+no real event loop or framework render cycle), so no specific-site compatibility
+is claimed. **Workday-specific handling and AI-assisted semantic field mapping
+are NOT implemented.**
 
 ## Permissions
 
@@ -360,6 +378,7 @@ estimate (Prompt 09 — library + tests; formula above), its match summary UI
 in Options → Jobs (Prompt 10), the deterministic resume tailoring engine
 (Prompt 11), the fixed-layout ATS-friendly resume PDF export + Options → Jobs
 download action (Prompt 12), the local application log + Options → Applications
-tab (Prompt 13), and the deterministic autofill foundation (Prompt 14).
+tab (Prompt 13), the deterministic autofill foundation (Prompt 14), and its
+reliability/safety hardening (Prompt 15).
 **Not yet built: Workday-specific handling, AI-assisted field mapping, and the
 deeper application-form automation.**

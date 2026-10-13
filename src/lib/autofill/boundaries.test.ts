@@ -61,6 +61,10 @@ describe('offline & AI boundaries', () => {
     expect(sources).not.toMatch(/runAiRequest|from ['"].*\/ai['"]/);
     expect(sources).not.toMatch(/fetch\s*\(/);
     expect(sources).not.toMatch(/chrome\.storage|browser\.storage/);
+    // Hardening (Prompt 15): the engine never submits, never clicks buttons and
+    // never navigates.
+    expect(sources).not.toMatch(/\.submit\s*\(|requestSubmit\s*\(|\.click\s*\(/);
+    expect(sources).not.toMatch(/location\s*=|window\.open\s*\(/);
   });
 });
 

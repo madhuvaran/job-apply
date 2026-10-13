@@ -81,7 +81,12 @@ describe('createAutofillSession', () => {
     const session = createAutofillSession(document);
     expect(session.handle({ type: 'some-other-message' })).toBeUndefined();
     expect(session.handle(null)).toBeUndefined();
-    expect(session.handle({ type: AUTOFILL_SCAN_REQUEST_TYPE, extra: true })).toBeUndefined();
+    expect(session.handle('plain string')).toBeUndefined();
+    // Shaped like ours but tampered (extra key) → rejected with a typed error.
+    expect(session.handle({ type: AUTOFILL_SCAN_REQUEST_TYPE, extra: true })).toMatchObject({
+      kind: 'error',
+      code: 'scan-failed',
+    });
   });
 
   it('reports no-fields for an empty page', () => {
@@ -98,9 +103,11 @@ describe('createAutofillSession', () => {
     expect(validateScanResponse(scan).ok).toBe(true);
     if (scan === undefined || scan.kind !== 'ok' || !('descriptors' in scan)) throw new Error('expected scan ok');
     expect(scan.descriptors[0]?.fieldId).toBe('af-0');
+    expect(scan.scanId.length).toBeGreaterThan(0);
 
     const fill = session.handle({
       type: AUTOFILL_FILL_REQUEST_TYPE,
+      scanId: scan.scanId,
       plan: {
         schemaVersion: '1',
         instructions: [
@@ -120,10 +127,11 @@ describe('createAutofillSession', () => {
     session.handle({ type: AUTOFILL_SCAN_REQUEST_TYPE });
     const response = session.handle({
       type: AUTOFILL_FILL_REQUEST_TYPE,
+      scanId: 'whatever',
       plan: { schemaVersion: '1', instructions: [{ fieldId: 'af-0' }] },
     });
-    // The strict request schema rejects the malformed plan outright.
-    expect(response).toBeUndefined();
+    // The strict request schema rejects the malformed plan with a typed error.
+    expect(response).toMatchObject({ kind: 'error', code: 'invalid-plan' });
     expect((document.getElementById('fn') as HTMLInputElement).value).toBe('');
   });
 

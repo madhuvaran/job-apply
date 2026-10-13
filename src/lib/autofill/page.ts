@@ -4,10 +4,13 @@
  * `collectFieldDescriptors` reads ONLY form-control metadata (labels, name, id,
  * autocomplete, type) — never the control's value, never arbitrary page text.
  * `createAutofillSession` handles the two popup messages over the existing
- * content-script channel: a scan (returns descriptors) and a fill (executes a
- * validated plan against the elements that were scanned).
+ * content-script channel: a scan (returns descriptors + a session token) and a
+ * fill (executes a validated plan against the elements that were scanned).
  *
- * Element references are held only in memory for the duration of one
+ * A plan is bound to the scan that produced it: every scan mints a fresh
+ * `scanId`, a fill request must echo the CURRENT one, and a mismatch (a stale
+ * or tampered session) is rejected with a typed `stale-session` error and no
+ * writes. Element references are held only in memory for the duration of one
  * scan→fill round trip; nothing is stored or transmitted anywhere.
  */
 import { z } from 'zod';
@@ -34,7 +37,9 @@ export const autofillScanRequestSchema = z
   .strict();
 
 export const autofillScanResponseSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('ok'), descriptors: fieldDescriptorsSchema }).strict(),
+  z
+    .object({ kind: z.literal('ok'), scanId: z.string().min(1).max(80), descriptors: fieldDescriptorsSchema })
+    .strict(),
   z
     .object({
       kind: z.literal('error'),
@@ -45,7 +50,12 @@ export const autofillScanResponseSchema = z.discriminatedUnion('kind', [
 ]);
 
 export const autofillFillRequestSchema = z
-  .object({ type: z.literal(AUTOFILL_FILL_REQUEST_TYPE), plan: fillPlanSchema })
+  .object({
+    type: z.literal(AUTOFILL_FILL_REQUEST_TYPE),
+    /** Session token from the scan that produced `plan`; a mismatch is stale. */
+    scanId: z.string().min(1).max(80),
+    plan: fillPlanSchema,
+  })
   .strict();
 
 export const autofillFillResponseSchema = z.discriminatedUnion('kind', [
@@ -53,7 +63,7 @@ export const autofillFillResponseSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('error'),
-      code: z.literal('invalid-plan'),
+      code: z.enum(['invalid-plan', 'stale-session']),
       message: z.string().min(1).max(300),
     })
     .strict(),
@@ -245,12 +255,35 @@ export interface AutofillSession {
   handle(message: unknown): AutofillResponse | undefined;
 }
 
+let scanCounter = 0;
+
+/** A fresh, unpredictable-per-session scan token (never persisted). */
+function newScanId(): string {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  if (c !== undefined && typeof c.randomUUID === 'function') {
+    try {
+      return `af-${c.randomUUID()}`;
+    } catch {
+      // fall through to the counter form
+    }
+  }
+  scanCounter += 1;
+  return `af-${Date.now().toString(36)}-${scanCounter.toString(36)}`;
+}
+
+function messageType(message: unknown): unknown {
+  if (typeof message !== 'object' || message === null) return undefined;
+  return (message as { type?: unknown }).type;
+}
+
 /**
- * Creates a session bound to one document. The scan message refreshes the
- * element registry; the fill message executes against the last scan only.
+ * Creates a session bound to one document. A scan refreshes the element
+ * registry and mints a new `scanId`; a fill is applied ONLY when it presents
+ * that exact token, so a plan can never be replayed against a different scan.
  */
 export function createAutofillSession(root: Document | ParentNode): AutofillSession {
   let registry = new Map<string, Element>();
+  let currentScanId: string | null = null;
 
   return {
     handle(message: unknown): AutofillResponse | undefined {
@@ -258,6 +291,8 @@ export function createAutofillSession(root: Document | ParentNode): AutofillSess
         try {
           const { descriptors, registry: next } = collectFieldDescriptors(root);
           if (descriptors.length === 0) {
+            registry = new Map();
+            currentScanId = null;
             return {
               kind: 'error',
               code: 'no-fields',
@@ -265,8 +300,11 @@ export function createAutofillSession(root: Document | ParentNode): AutofillSess
             };
           }
           registry = next;
-          return { kind: 'ok', descriptors };
+          currentScanId = newScanId();
+          return { kind: 'ok', scanId: currentScanId, descriptors };
         } catch {
+          registry = new Map();
+          currentScanId = null;
           return {
             kind: 'error',
             code: 'scan-failed',
@@ -275,8 +313,34 @@ export function createAutofillSession(root: Document | ParentNode): AutofillSess
         }
       }
 
+      const type = messageType(message);
+      if (type !== AUTOFILL_SCAN_REQUEST_TYPE && type !== AUTOFILL_FILL_REQUEST_TYPE) {
+        return undefined; // not our message
+      }
+      if (type === AUTOFILL_SCAN_REQUEST_TYPE) {
+        // Shaped like a scan but failed strict validation (extra/tampered keys).
+        return {
+          kind: 'error',
+          code: 'scan-failed',
+          message: 'The scan request was malformed.',
+        };
+      }
+
       const fillReq = autofillFillRequestSchema.safeParse(message);
-      if (!fillReq.success) return undefined;
+      if (!fillReq.success) {
+        return {
+          kind: 'error',
+          code: 'invalid-plan',
+          message: 'The fill request was invalid or incomplete. Nothing was changed.',
+        };
+      }
+      if (currentScanId === null || fillReq.data.scanId !== currentScanId) {
+        return {
+          kind: 'error',
+          code: 'stale-session',
+          message: 'The form changed since it was scanned. Nothing was changed — scan again.',
+        };
+      }
 
       const executed = executeFillPlan(fillReq.data.plan, registry);
       if (!executed.ok) {

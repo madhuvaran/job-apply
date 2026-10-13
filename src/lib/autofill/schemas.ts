@@ -129,6 +129,11 @@ export type FillPlan = z.infer<typeof fillPlanSchema>;
 /* 3. Fill report (per-field outcomes, value-free)                     */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Per-field outcomes. `verify-failed` is returned when a write did not take
+ * effect (the page rejected it, or a controlled input reverted it) — success is
+ * never claimed without a verified post-fill state.
+ */
 export const FILL_STATUSES = [
   'filled',
   'not-found',
@@ -138,6 +143,7 @@ export const FILL_STATUSES = [
   'hidden',
   'unsupported-element',
   'no-match',
+  'verify-failed',
   'error',
 ] as const;
 export type FillStatus = (typeof FILL_STATUSES)[number];
