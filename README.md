@@ -121,6 +121,54 @@ keys are allowed. The extension makes no request at all until you enable AI
 in Settings & privacy *and* wire a backend endpoint — with AI off (the
 default) the current build still performs zero network requests.
 
+## Job match estimate (deterministic, no AI)
+
+`src/lib/matching/` computes a **transparent 0–100 job match estimate** from
+saved data only: `calculateJobMatch(profile, job, settings)` compares a saved
+JobPosting's structured sections (from deterministic intake extraction) with
+the AI-safe master profile and your job settings. It is offline and
+deterministic — no network requests, no AI calls, no clock (the posting's own
+capture date anchors time math), no storage writes, and it never touches the
+sensitive profile, contact details, legal answers or compensation.
+
+**This is our own estimate. It is NOT an employer's ATS score, an interview
+probability, or a guarantee.**
+
+### Scoring formula (weights live in one place: `MATCH_WEIGHTS`)
+
+| Factor | Weight | What it measures |
+|---|---|---|
+| `requiredSkills` | 35 | coverage of skills the posting marks required (`skills[]` + required qualifications) |
+| `preferredSkills` | 10 | coverage of "nice to have" skills |
+| `experience` | 20 | profile career span vs the posting's stated experience range |
+| `roleAlignment` | 20 | 0.6 × job-title token overlap + 0.4 × responsibility lines touching your listed skills |
+| `preferences` | 15 | settings compatibility: location, work mode, employment type, experience range |
+
+Score = weighted average over the factors that can actually be assessed;
+unknown factors are excluded (weights renormalized), and if less than 40% of
+the weight is assessable the result is an explicit **insufficient-data**
+outcome instead of a misleading number.
+
+### Honest statuses (per requirement)
+
+- `matched` — verified profile evidence (references returned, never copies).
+- `partial` — adjacent evidence (e.g. React Native for React) or partial preference fit.
+- `missing` — an affirmative contradiction (education ceiling, career-span
+  shortfall, explicit non-overlapping preference).
+- `unknown` — insufficient information. **A skill absent from your profile is
+  never treated as proof you lack it** — it is `unknown` (and only flagged as
+  a *potential* hard issue when the posting marks it required).
+
+Hard-requirement issues are reported separately from the score with three
+severities (`confirmed` / `potential` / `unknown`), alongside a data-
+completeness confidence indicator (a coverage measure, not a probability) and
+the threshold decision. Skill matching is vocabulary-scoped and conservative
+(word boundaries; k8s ≡ Kubernetes; "java" never matches "JavaScript"; a
+skill mentioned only in raw prose never becomes a requirement). With
+`minMatchThreshold = 0` (the default) threshold filtering is off; a positive
+threshold is evaluated separately and insufficient data never counts as a
+pass.
+
 ## Permissions
 
 `storage` (validated local data), `activeTab` (current tab only, granted when you
@@ -143,8 +191,8 @@ extension (see the backend-proxy pattern above).
 
 Phased plan lives in `PROGRESS.md`. Done so far: profile + evidence schema,
 validated storage service, profile editor, settings & privacy model, job-posting
-model with manual intake, user-triggered current-page capture, and the
-provider-agnostic AI interface (Prompt 06: strict request/response schemas,
-timeouts, rate-limit retries, no-AI fallback, mock provider, backend-proxy
-docs). **Not yet wired into features: no UI/feature calls the AI interface yet
-— tailoring and match estimate come next.**
+model with manual intake, user-triggered current-page capture, the
+provider-agnostic AI interface (Prompt 06), and the deterministic job match
+estimate (Prompt 09 — library + tests; formula above). **Not yet built:
+resume tailoring, the match dashboard UI, and any wiring of the AI interface
+into features.**

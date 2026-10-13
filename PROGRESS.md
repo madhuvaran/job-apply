@@ -1,5 +1,125 @@
 # PROGRESS
 
+## Done (2026-10-13, task 11 / Prompt 09: deterministic job match estimate)
+- **`src/lib/matching/`** (new, 6 files) — an isolated, OFFLINE, deterministic
+  matching engine. `calculateJobMatch(profile, job, settings)` reuses the
+  EXISTING validated models (`profileSchema`, `jobPostingSchema`,
+  `settingsSchema` — all three re-parsed on entry; invalid input returns a
+  typed `{ kind: 'invalid' }` result with path+CODE issues only, never zod
+  messages/values, so errors cannot quote personal data). No second profile
+  or posting model was created; `minMatchThreshold` is the existing settings
+  field (no schema change was needed — the posting already distinguishes
+  `requiredQualifications` from `preferredQualifications`).
+- **`matching/schemas.ts`** (new) — strict (`.strict()`) result contract:
+  `matchRequirementSchema` (bounded label, category, required/preferred,
+  status `matched|partial|missing|unknown`, evidence REFERENCES by id — never
+  copied content — and a fixed-shape explanation ≤300 chars),
+  `matchFactorSchema` (factor + weight + nullable score), `hardIssueSchema`
+  (severity `confirmed|potential|unknown`), discriminated `matchEstimateSchema`
+  (`score` with integer 0–100 | `insufficient-data` with reason),
+  `matchConfidenceSchema` (level + completeness% + counts — explicitly NOT a
+  probability), `matchThresholdSchema` (configured/filtering/meets/decision),
+  `matchResultSchema` + `validateMatchResult` (issues are path+code only).
+- **`matching/vocabulary.ts`** (new) — conservative normalization + curated
+  vocabulary (~50 skills, 3 named certifications, education levels): diacritic
+  stripping, punctuation→space while KEEPING `#`/`+`/`.` (c#, c++, node.js),
+  word-boundary regexes, longest-alias-wins with span-overlap resolution
+  ("node.js" → node, never "js"; "java" never matches "javascript"; ".net"
+  never matches inside "asp.net"). Deliberately NOT aliased: ambiguous prose
+  words (spring/rest/express). Unknown skills are NEVER guessed into the
+  vocabulary. `titleTokens` strips level words; `isStrictTokenPrefix` powers
+  adjacent-evidence partials ("React Native" ↔ "React").
+- **`matching/requirements.ts`** (new) — requirements are extracted ONLY from
+  the posting's STRUCTURED fields (skills[], required/preferred
+  qualifications, experienceRange, workArrangement, employmentType,
+  location); the raw description is never keyword-scanned (a "React" mention
+  in prose cannot create a requirement or candidate evidence — tested).
+  Status semantics: matched (canonical equality with evidence), partial
+  (adjacent evidence / partial preference fit), missing (AFFIRMATIVE
+  contradictions only: education ceiling vs completed credentials, career
+  span < posted minimum, explicit non-overlapping preferences), unknown
+  (insufficient info — a skill absent from the profile is unknown, flagged
+  `potential` only when required AND the profile lists skills). Career span is
+  computed from profile dates against the posting's `capturedAt` (never the
+  clock → deterministic); in-progress degrees never count as completed.
+  Preference items (location token-subset match, work mode, employment type,
+  experience-range overlap) are emitted when either side has data.
+- **`matching/factors.ts`** (new) — ONE weight configuration
+  (`MATCH_WEIGHTS`, sums to 100, test-asserted): requiredSkills 35,
+  preferredSkills 10, experience 20, roleAlignment 20 (0.6×title token
+  overlap + 0.4×responsibility lines touching profile skills, word-bounded),
+  preferences 15. Coverage factors use matched=1/partial=0.5/missing=0 over
+  DECISIVE items; unknown items are excluded from the ratio and counted in
+  completeness (missing data never silently counts as confirmed failure).
+  Factors with no decisive data score null and are excluded; remaining
+  weights renormalize; `MIN_SCORE_WEIGHT = 40` gates numeric scores.
+  These weights are our own heuristic — no employer ATS algorithm is claimed.
+- **`matching/estimate.ts`** (new) — orchestration: input validation →
+  assessment → factors → weighted integer score clamped 0–100 → hard issues
+  (separate from score) → confidence (completeness = decided/total items;
+  high ≥75, medium ≥40, else low) → threshold (`0` = disabled, `meets: null`;
+  positive = `pass`/`below` from the UNCHANGED score; insufficient-data →
+  `meets: false`, never a silent pass) → bounded evidence-based summary.
+  Result passes the strict schema as an invariant. Never throws for expected
+  failures; no mutation (deep-frozen-input test), no network (fetch-spy test),
+  no AI (`runAiRequest` not importable from the module — tested), no storage.
+- **Tests** (2 new files, 53 tests): `matching/estimate.test.ts` (36) — the
+  full Prompt 09 matrix: strong match w/ verified skills + evidence refs;
+  weak match w/ 5 confirmed hard issues + potential skill gap; partial-info →
+  insufficient-data; empty profile → inconclusive (unknowns, not zeros);
+  required-vs-preferred weighting + exact weighted-average formula check;
+  contradicted requirement (bachelor's vs master's) vs in-progress = unknown
+  vs absent skill = unknown(+potential); case/whitespace normalization;
+  aliases (k8s/node.js/postgres) and non-aliases (spring); substring
+  false-positives (java ≠ javascript, raw-prose mentions never become
+  requirements); adjacent evidence (React Native ↔ React, both directions);
+  missing sections; clamped integer scores; determinism (identical output);
+  ongoing experience measured against capturedAt (36 months @2023 capture vs
+  72 @2026); invalid settings/threshold (101/-1/50.5/'70'/null) rejected
+  typed; threshold 0 disabled / pass / below / insufficient-data-never-passes;
+  salary + posting compensation never in result JSON; strict result schema
+  rejects injected keys; zero network; deep-frozen inputs. `matching/
+  vocabulary.test.ts` (17) — normalization, alias/boundary/overlap rules,
+  education detection, title tokens, cert names, vocabulary uniqueness.
+  Suite: **286 tests passing (13 files)**.
+- **`README.md`** — new "Job match estimate (deterministic, no AI)" section
+  (formula table + weights, honest statuses, conservative matching rules,
+  threshold semantics, NOT-an-ATS-score disclaimer); status/roadmap updated.
+
+### Commands run this task (exit statuses captured inline)
+- `npm ci` → exit 0 (node_modules was absent again after workspace restore)
+- `npx vitest run` → **exit 0, 286/286 passed** (233 baseline + 53 new)
+- `npm run compile` → **exit 0**
+- `npm run build` → **exit 0**; built manifest unchanged:
+  `permissions = ["storage", "activeTab", "scripting"]`, no `host_permissions`
+- `git grep` verified: no AI-layer imports in `src/lib/matching/`
+
+### Limitations / known issues
+- Matching is VOCABULARY-SCOPED: only ~50 curated skills and 3 named
+  certifications can be assessed; anything else in the posting is skipped
+  (never guessed). Extend `SKILL_VOCABULARY` conservatively.
+- Skills absent from a populated profile list are `unknown` (+ `potential`
+  hard issue when required), NOT `missing` — absence of listing is not proof.
+  The engine can therefore understate confirmed skill gaps by design.
+- `excludedEmployers` in settings is NOT consumed by the matcher yet (scope);
+  neither is the posting's `compensation` (deliberately ignored) nor
+  settings.salary (never read). Profile `preferences.willingToRelocate` is
+  used only to soften a location mismatch to `partial`.
+- Title/responsibility alignment is token-overlap based — it can
+  under-align creative titles ("Solutions Architect" vs "Engineer"); zero
+  tech overlap in responsibilities is treated as unknown, not a failure.
+- No UI: the engine is library-only (per scope). A dashboard consuming
+  `calculateJobMatch` is the next integration step, together with storing a
+  backend endpoint for the AI layer when requested.
+- No live e2e/browser verification (unit-level only, like the rest of the
+  lib layer).
+
+### Next
+- A match dashboard/summary UI consuming `calculateJobMatch` (options Jobs
+  tab), then resume tailoring (Prompt 10+) once reviewed.
+
+---
+
 ## Done (2026-10-13, task 10 / Prompt 06: provider-agnostic AI interface)
 - **`src/lib/ai/schemas.ts`** (new) — zod-validated wire contract (v1), strict
   (`.strict()`) at EVERY level: `aiRequestSchema` = schemaVersion literal +
