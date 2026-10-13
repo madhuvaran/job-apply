@@ -50,7 +50,9 @@ tabs; everything is stored **locally** via `chrome.storage.local`:
   summary recalculates when you select a different job or when profile,
   posting or settings inputs change; missing profile, missing job, invalid
   input and insufficient data each show an honest message instead of a
-  misleading number.
+  misleading number. The resume section under a selected job downloads a
+  tailored PDF or explicitly saves a fixed snapshot to the local **resume
+  version history** (see below); the history list is always visible under it.
 
 ## Capture current job (popup)
 
@@ -231,6 +233,60 @@ scripts are refused rather than transliterated; there is no in-page PDF
 *preview* (the file is downloaded), no template/branding options, and no
 bundled custom fonts. Nothing claims the PDF will pass a specific employer's
 ATS.
+
+## Tailored resume version history (local-only, no external service)
+
+In **Options → Jobs**, the resume section can **Save version to history**:
+each click stores the exact tailored resume generated for the selected job as
+a fixed, strictly validated snapshot in `chrome.storage.local` under the
+dedicated versioned key `job-resume-history.v1` — never sync storage, and
+never the profile, sensitive-profile, settings, jobs or application-log keys.
+Saving is always **explicit**: it never submits an application, never changes
+an application status, and makes no network or AI request.
+
+Each record (`src/lib/resume/history.ts`) stores only: a generated version id,
+the history schema version, the referenced saved `jobId` (when the snapshot's
+provenance has one), `jobTitle`/`company` labels copied from the saved job
+**when available**, the creation timestamp, a small `status` (`saved`), and the
+resume snapshot itself — the existing strict `tailoredResumeSchema`, reused
+rather than duplicated. Records are `.strict()`-validated on read and write:
+unknown keys (credentials, tokens, page content, HTML/selectors) and sensitive
+profile fields (contact details, legal/EEO/voluntary answers, compensation,
+government IDs) are rejected, and validation issues are reported as path +
+code only — never resume or profile content. Job details, labels and
+timestamps are never invented.
+
+How it works:
+
+- **Save** — appends newest-first; existing versions are never rewritten or
+  dropped. The saved payload is the version that was just generated (the
+  deterministic `tailorResume` output for the current profile + job), copied
+  through the strict schema so later edits cannot reach it.
+- **Open** — shows the version's job label, creation date, status and a
+  count-only section summary (no resume body text is listed; there is no
+  in-page PDF/resume preview in this build).
+- **Export** — renders the **stored snapshot** through the existing
+  `renderResumePdf`, so a historical PDF is exactly what that version
+  contained even after you edit your profile or the posting (verified by a
+  byte-identical test against `renderResumePdf(snapshot)`). It needs no loaded
+  profile.
+- **Delete** — two-step confirmation that removes exactly the selected
+  version; other versions and every other storage key are untouched.
+- **Integrity** — absent, malformed, unavailable and quota results are
+  distinguished with fixed, content-free messages. Malformed history is
+  surfaced with a recoverable raw value and **never** overwritten; replacing
+  it requires an explicit confirmation. At the documented cap (**200**
+  versions) a new save is *refused* with a clear message instead of silently
+  deleting older versions.
+- **Orphans are safe** — deleting a saved job posting later leaves its
+  versions intact; the row is flagged "Job posting no longer saved" and open /
+  export / delete keep working from the snapshot alone.
+
+Limitations: history lives only in this browser (no history sync or
+import/export), there is no in-page preview of a saved version (export
+downloads the PDF), the 200-version cap is only lifted by deleting versions
+yourself, and the UI is verified with `react-dom/server` + unit tests (no
+real-browser e2e here).
 
 ## Application log (local-only, no external service)
 
@@ -434,7 +490,8 @@ in Options → Jobs (Prompt 10), the deterministic resume tailoring engine
 download action (Prompt 12), the local application log + Options → Applications
 tab (Prompt 13), the deterministic autofill foundation (Prompt 14), its
 reliability/safety hardening (Prompt 15), Workday-style compatibility discovery
-with a synthetic fixture set and matrix (Prompt 16), and the opt-in AI-assisted
-field-mapping layer (Prompt 17).
+with a synthetic fixture set and matrix (Prompt 16), the opt-in AI-assisted
+field-mapping layer (Prompt 17), and the local tailored resume version history
++ snapshot export (Prompt 19).
 **Not yet built: a Workday adapter, live wiring of the AI provider endpoint, and
 the deeper application-form automation.**

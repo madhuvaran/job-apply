@@ -273,3 +273,20 @@ select { max-width: 220px; }
 .application-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .application-confirm .hint { margin: 0; }
 .application-edit { border-top: 1px solid #eef0f4; margin-top: 12px; padding-top: 8px; }
+
+/* Resume version history (Prompt 19). */
+.resume-version-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.resume-version {
+  border: 1px solid #eef0f4; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px;
+}
+.resume-version[data-orphaned='true'] { border-color: #fde68a; background: #fffbeb; }
+.resume-version-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.resume-version-head > div { display: flex; flex-direction: column; }
+.resume-version-title { font-size: 1rem; }
+.resume-version-details {
+  border-top: 1px solid #eef0f4; margin-top: 8px; padding-top: 8px;
+  display: flex; flex-direction: column; gap: 6px; align-items: flex-start;
+}
+.resume-version-details .hint { margin: 0; }
+.resume-version-detail-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.resume-version-actions { display: flex; flex-wrap: wrap; gap: 6px; }

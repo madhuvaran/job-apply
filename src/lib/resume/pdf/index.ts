@@ -13,10 +13,13 @@ export {
 } from './render';
 export { downloadBlob, type DownloadEnvironment, type DownloadResult } from './download';
 export {
+  downloadResumeSnapshot,
   generateAndDownloadResume,
   type ResumeExportDeps,
   type ResumeExportFailure,
   type ResumeExportOutcome,
+  type SnapshotExportFailure,
+  type SnapshotExportOutcome,
 } from './export';
 export {
   buildBlocks,

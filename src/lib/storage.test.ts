@@ -13,6 +13,7 @@ import {
   loadApplications,
   loadJobPostings,
   loadProfile,
+  loadResumeHistory,
   loadSensitiveProfile,
   loadSettings,
   mapLegacyToProfile,
@@ -21,11 +22,13 @@ import {
   resetApplications,
   resetJobPostings,
   resetProfile,
+  resetResumeHistory,
   resetSensitiveProfile,
   resetSettings,
   saveApplications,
   saveJobPostings,
   saveProfile,
+  saveResumeHistory,
   saveSensitiveProfile,
   saveSettings,
   STORAGE_KEYS,
@@ -37,6 +40,8 @@ import { createJobPosting, type JobPosting } from './job-posting';
 import { sampleProfile, sampleSensitiveProfile } from './sample-profile';
 import type { LegacyProfileV1 } from './legacy';
 import { emptyApplicationsRecord } from './applications/schemas';
+import { createResumeHistoryEntry, emptyResumeHistoryRecord } from './resume/history';
+import { baseResume } from './resume/pdf/test-support';
 
 type StorageApi = {
   get: (keys: string | string[]) => Promise<Record<string, unknown>>;
@@ -665,5 +670,70 @@ describe('applications (v1) storage', () => {
     h.backing.set(STORAGE_KEYS.applications, seeded);
     expect(await resetApplications()).toBeNull();
     expect(await loadApplications()).toEqual({ ok: true, data: emptyApplicationsRecord() });
+  });
+});
+
+describe('resume history (v1) storage', () => {
+  it('returns absent for the history key when nothing is stored', async () => {
+    const res = await loadResumeHistory();
+    expect(res).toMatchObject({ ok: false, reason: 'absent' });
+    expect(res).not.toHaveProperty('raw');
+  });
+
+  it('round-trips a valid history record (local key only)', async () => {
+    const entry = createResumeHistoryEntry(
+      baseResume(),
+      { id: 'job-1', title: 'Senior Backend Engineer', company: 'Acme Fake Co' },
+      { now: () => '2026-10-13T09:00:00.000Z', id: () => 'rv-1' },
+    );
+    const record = { schemaVersion: '1' as const, versions: [entry] };
+    expect(await saveResumeHistory(record)).toBeNull();
+    expect(await loadResumeHistory()).toEqual({ ok: true, data: record });
+    expect(h.backing.has(STORAGE_KEYS.resumeHistory)).toBe(true);
+    // Nothing is written to sync storage or any other key.
+    expect([...h.backing.keys()]).toEqual([STORAGE_KEYS.resumeHistory]);
+  });
+
+  it('returns malformed with recoverable raw and never overwrites it', async () => {
+    const corrupt = { schemaVersion: '1', versions: [{ id: 'x', secret: 'SECRET-VALUE' }] };
+    h.backing.set(STORAGE_KEYS.resumeHistory, corrupt);
+    const res = await loadResumeHistory();
+    expect(res).toMatchObject({ ok: false, reason: 'malformed' });
+    if (!res.ok) {
+      expect(res.raw).toEqual(corrupt);
+      expect(res.message).not.toMatch(/SECRET-VALUE/);
+    }
+    // Nothing was written — the corrupt value is still exactly as stored.
+    // (The history service additionally refuses mutations while malformed.)
+    expect(h.backing.get(STORAGE_KEYS.resumeHistory)).toEqual(corrupt);
+    expect([...h.backing.keys()]).toEqual([STORAGE_KEYS.resumeHistory]);
+  });
+
+  it('surfaces unavailable storage and quota write failures', async () => {
+    h.failure.getType = 'get';
+    expect(await loadResumeHistory()).toMatchObject({ ok: false, reason: 'unavailable' });
+
+    h.failure.getType = 'none';
+    h.backing.set(STORAGE_KEYS.resumeHistory, emptyResumeHistoryRecord());
+    h.failure.getType = 'setOnly';
+    h.failure.errorName = 'QuotaExceededError';
+    const write = await saveResumeHistory(emptyResumeHistoryRecord());
+    expect(write).toMatchObject({ ok: false, reason: 'quota' });
+    // The failed write left the stored record in place.
+    expect(h.backing.get(STORAGE_KEYS.resumeHistory)).toEqual(emptyResumeHistoryRecord());
+  });
+
+  it('resetResumeHistory is explicit-only and touches no other key', async () => {
+    await saveProfile(sampleProfile);
+    h.backing.set(
+      STORAGE_KEYS.resumeHistory,
+      { schemaVersion: '1', versions: [{ id: 'x', broken: true }] },
+    );
+    expect(await resetResumeHistory()).toBeNull();
+    expect(await loadResumeHistory()).toEqual({ ok: true, data: emptyResumeHistoryRecord() });
+    // Profile and the other keys are untouched by the explicit reset.
+    expect(h.backing.get(STORAGE_KEYS.profile)).toEqual(sampleProfile);
+    expect(h.backing.has(STORAGE_KEYS.applications)).toBe(false);
+    expect(h.backing.has(STORAGE_KEYS.jobPostings)).toBe(false);
   });
 });

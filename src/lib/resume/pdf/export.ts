@@ -14,6 +14,7 @@
  */
 import type { Profile } from '../../profile';
 import type { JobPosting } from '../../job-posting';
+import type { TailoredResume } from '../schemas';
 import { tailorResume } from '../tailor';
 import { renderResumePdf } from './render';
 import { downloadBlob, type DownloadEnvironment, type DownloadResult } from './download';
@@ -80,6 +81,53 @@ export async function generateAndDownloadResume(
   }
 
   const download = deps.download ?? ((blob: Blob, filename: string) => downloadBlob(blob, filename, deps.environment));
+  const downloaded = download(rendered.blob, rendered.filename);
+  if (!downloaded.ok) {
+    return { ok: false, reason: 'download-unavailable', message: downloaded.message };
+  }
+
+  return { ok: true, pageCount: rendered.pageCount, filename: rendered.filename };
+}
+
+/** Failure reasons a saved-snapshot export can produce (no tailoring step). */
+export type SnapshotExportFailure =
+  | 'invalid'
+  | 'unsupported-characters'
+  | 'render-failed'
+  | 'download-unavailable';
+
+export type SnapshotExportOutcome =
+  | { ok: true; pageCount: number; filename: string }
+  | { ok: false; reason: SnapshotExportFailure; message: string };
+
+/**
+ * Export a SAVED resume version's snapshot (Prompt 19).
+ *
+ * Renders exactly the provided payload through the existing
+ * `renderResumePdf` and hands the Blob to the download helper. It never
+ * tailors, never reads the profile or a job posting and never touches
+ * storage — so exporting a historical version uses its saved snapshot even
+ * after the master profile or the posting has changed. Typed failures with
+ * fixed, safe messages (no resume/profile text). Offline: no AI, no network.
+ */
+export async function downloadResumeSnapshot(
+  snapshot: TailoredResume,
+  deps: ResumeExportDeps = {},
+): Promise<SnapshotExportOutcome> {
+  const rendered = await renderResumePdf(snapshot);
+  if (!rendered.ok) {
+    return {
+      ok: false,
+      reason: rendered.code,
+      message:
+        rendered.code === 'unsupported-characters'
+          ? `Some profile text cannot be rendered in the PDF: ${rendered.issues.join(' ')}`
+          : 'The saved resume version could not be rendered, so no file was created.',
+    };
+  }
+
+  const download =
+    deps.download ?? ((blob: Blob, filename: string) => downloadBlob(blob, filename, deps.environment));
   const downloaded = download(rendered.blob, rendered.filename);
   if (!downloaded.ok) {
     return { ok: false, reason: 'download-unavailable', message: downloaded.message };

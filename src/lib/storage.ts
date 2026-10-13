@@ -5,6 +5,7 @@
  *   job-profile.v2            -> AI-safe Profile        (src/lib/profile.ts)
  *   job-profile.sensitive.v2  -> SensitiveProfile       (src/lib/sensitive.ts)
  *   job-settings.v1           -> Settings               (src/lib/settings.ts)
+ *   job-resume-history.v1     -> Resume history record  (src/lib/resume/history.ts)
  *   job-profile               -> legacy starter profile (schema v1, kept for migration)
  *
  * Every load returns a discriminated `StorageResult` so callers can handle
@@ -61,6 +62,11 @@ import {
   emptyApplicationsRecord,
   type ApplicationsRecord,
 } from './applications/schemas';
+import {
+  emptyResumeHistoryRecord,
+  resumeHistoryRecordSchema,
+  type ResumeHistoryRecord,
+} from './resume/history';
 import { z } from 'zod';
 
 const KEY_V2 = 'job-profile.v2';
@@ -73,6 +79,12 @@ const KEY_SETTINGS = 'job-settings.v1';
 const KEY_JOB_POSTINGS = 'job-postings.v1';
 /** Local application log — schema v1 in src/lib/applications/schemas.ts. Local-only, never synced. */
 const KEY_APPLICATIONS = 'job-applications.v1';
+/**
+ * Local tailored resume version history — schema v1 in src/lib/resume/history.ts.
+ * Dedicated key: never reuses or overwrites profile / sensitive / settings /
+ * job / application-log keys. Local-only, never synced.
+ */
+const KEY_RESUME_HISTORY = 'job-resume-history.v1';
 
 export const STORAGE_KEYS = {
   profile: KEY_V2,
@@ -81,6 +93,7 @@ export const STORAGE_KEYS = {
   settings: KEY_SETTINGS,
   jobPostings: KEY_JOB_POSTINGS,
   applications: KEY_APPLICATIONS,
+  resumeHistory: KEY_RESUME_HISTORY,
 } as const;
 
 /* ------------------------------------------------------------------ */
@@ -395,6 +408,30 @@ export async function saveApplications(
 /** Explicit-only reset: replace the application log with an empty valid record. */
 export async function resetApplications(): Promise<StorageResult<ApplicationsRecord> | null> {
   return saveApplications(emptyApplicationsRecord());
+}
+
+/* ------------------------------------------------------------------ */
+/* Tailored resume version history (v1) — local-only                   */
+/* ------------------------------------------------------------------ */
+
+export async function loadResumeHistory(): Promise<StorageResult<ResumeHistoryRecord>> {
+  return loadValidated(STORAGE_KEYS.resumeHistory, resumeHistoryRecordSchema);
+}
+
+export async function saveResumeHistory(
+  record: ResumeHistoryRecord,
+): Promise<StorageResult<ResumeHistoryRecord> | null> {
+  return writeValidated(STORAGE_KEYS.resumeHistory, resumeHistoryRecordSchema, record);
+}
+
+/**
+ * Explicit-only reset: replace the resume history with an empty valid record.
+ * The ONLY way malformed history is ever replaced (never implicit, never
+ * silent) and never touches profile, sensitive, settings, jobs or the
+ * application log.
+ */
+export async function resetResumeHistory(): Promise<StorageResult<ResumeHistoryRecord> | null> {
+  return saveResumeHistory(emptyResumeHistoryRecord());
 }
 
 /* ------------------------------------------------------------------ */

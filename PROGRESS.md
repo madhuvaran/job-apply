@@ -1,5 +1,145 @@
 # PROGRESS
 
+## Done (2026-10-13, task 21 / Prompt 19: local tailored resume version history)
+Local-only save/revisit/export/delete of the resume versions generated per job.
+Integrates with the EXISTING deterministic `tailorResume` + `renderResumePdf`
+workflow; no DOCX, no AI wiring, no Workday adapter, no application-log change.
+- **`src/lib/resume/history.ts`** (new) — strict zod v4 (`.strict()`) model:
+  `resumeHistoryEntrySchema` { generated `id`, `schemaVersion`, optional
+  `jobId`, optional `jobTitle`/`company` labels, `createdAt`, fixed `status`
+  (`saved`), and the `snapshot` — the EXISTING `tailoredResumeSchema` reused,
+  never duplicated } plus `resumeHistoryRecordSchema` (cap
+  `MAX_RESUME_HISTORY_VERSIONS` 200). Unknown keys (credentials, tokens, page
+  content, HTML/selectors) and sensitive profile fields are rejected on read
+  AND write; issues are `path: code` only (no content). Pure helpers:
+  `createResumeHistoryEntry` (labels copied from the saved job / snapshot
+  provenance — never invented; company omitted when absent; injected `now`/`id`),
+  `upsertResumeHistoryEntry` (newest-first, replace-by-id, nothing dropped),
+  `removeResumeHistoryEntry` (exactly one id), `findResumeHistoryEntry`,
+  `isResumeHistoryFull`, `validateResumeHistoryEntry`, `formatResumeHistoryIssues`.
+  No storage/PDF/sensitive import (pure module).
+- **`src/lib/storage.ts`** (minimal extension) — dedicated versioned key
+  `STORAGE_KEYS.resumeHistory` = `job-resume-history.v1` with
+  `loadResumeHistory`/`saveResumeHistory`/`resetResumeHistory` over the
+  existing `loadValidated`/`writeValidated` service (absent / malformed+raw /
+  unavailable / quota distinctions; corrupt data never silently overwritten).
+  Profile, sensitive, settings, jobs and application-log keys are untouched.
+- **`src/lib/resume/history-service.ts`** (new) — domain rules with the typed
+  outcome convention (`{ ok } | { ok:false, reason, message, issues?, raw? }`;
+  reasons absent/malformed/unavailable/quota/invalid/not-found/limit-reached):
+  `listResumeVersions` (absent → empty list), `getResumeVersion`,
+  `saveResumeVersion` (strict snapshot validation, job/resume provenance
+  cross-check, load-first abort on malformed/unavailable, **refuses** at the
+  200 cap with `limit-reached` — never trims older versions),
+  `deleteResumeVersion` (exactly the selected id). Messages are fixed and
+  carry no resume/profile/job content. No AI, no network, no sensitive profile,
+  no direct `chrome.storage` (source-scanned in tests).
+- **`src/lib/resume/pdf/export.ts`** — new `downloadResumeSnapshot(snapshot,
+  deps?)`: renders the PROVIDED payload through the existing
+  `renderResumePdf` and downloads it. No tailoring, no profile/job read, no
+  storage — a historical export always uses its saved snapshot (byte-identical
+  to `renderResumePdf(snapshot)` in tests). Typed failures reuse the same fixed
+  messages (`invalid` / `unsupported-characters` / `render-failed` /
+  `download-unavailable`).
+- **UI (Options → Jobs):** `ResumeExport.tsx` gains an explicit **Save version
+  to history** button (saves the version just generated for the current
+  profile+job; disabled once that version is saved, reset when profile/job
+  change; never submits or touches application status) and an honest
+  no-profile message. New `ResumeHistory.tsx` (container: loads versions + job
+  references, malformed/unavailable banners with explicit-only discard,
+  orphan banner, export/delete handlers) + `ResumeVersionList.tsx`
+  (presentational: labels, `Saved <date>`, status, count-only details behind
+  **Open**, **Export PDF**, two-step **Delete** gated on `confirmingDeleteId`).
+  `JobsPanel.tsx` renders the history section (always visible, even without a
+  selected job) and refreshes it via `onVersionSaved`; `style.css` gained a
+  small `.resume-version*` block. No preview exists in this build, so opening a
+  version shows labels/counts instead of a rendered preview (documented).
+- **Tests (6 files, +55 tests; suite 634 passing (40 files)):**
+  `resume/history.test.ts` (14) — entry/record round trips, strict rejection of
+  unknown keys (`apiKey`/`token`/`pageContent`/`selector`/`salary`/…),
+  sensitive-field rejection at entry AND snapshot level, malformed id/date/
+  status/label/snapshot, over-cap record, value-free issues (never echo
+  `SECRET…`), label provenance (no invented company/title), snapshot
+  immutability against later source mutation, injected clock/id determinism,
+  newest-first upsert without drops, delete-one, cap helper. `resume/history-service.test.ts`
+  (16) — absent → empty; save→list→get round trip (newest first); only the
+  history key written (profile/jobs/applications byte-unchanged; no application
+  created); works with no job store; malformed with recoverable raw and never
+  overwritten on save/delete/get (message free of content); unavailable read/
+  write; quota write preserves existing versions; invalid resume + mismatched
+  job rejected without writing; 200-cap save refused (`Nothing was deleted`);
+  profile+job edited after save → stored snapshot deep-equals the original
+  while re-tailoring differs; export after edit contains the ORIGINAL summary
+  and not the new one; delete removes only the selected version; orphaned job
+  reference keeps labels/snapshot and stays exportable/deletable; zero fetch;
+  source scan (no sensitive/AI/fetch/direct-storage imports). `resume/history-ui.test.ts`
+  (9) — labels/date/status, count-only details (no resume body text), open/
+  closed gating, **delete-confirmation gate**, orphan flag + kept version,
+  empty state, HTML-escaping, busy-disabled actions, zero network.
+  `resume/resume-export-ui.test.ts` (4) — save control present + explained,
+  both actions disabled without a profile, no pre-claimed "saved" state, zero
+  network. `resume/pdf/snapshot-export.test.ts` (7) — download once, exported
+  bytes identical to `renderResumePdf(snapshot)` (snapshot text present,
+  posting provenance still not rendered), only the snapshot is a required
+  parameter, typed invalid/unsupported-character/download failures, zero
+  network. `storage.test.ts` (+5) — absent, one-entry round trip (local key
+  only), malformed+raw preserved with content-free message, unavailable +
+  quota with the stored record intact, explicit reset touching no other key.
+- **`README.md`** — new "Tailored resume version history (local-only)"
+  section (storage key, record fields, save/open/export/delete behavior, cap,
+  orphan policy, limitations) + Jobs-tab and roadmap updates.
+
+### Commands run this task (exit statuses captured inline)
+- `npx vitest run` → **exit 0, 634/634 passed** (40 files; 579 baseline + 55 new)
+- `npm run compile` → **exit 0**
+- `npm run build` → **exit 0**; built manifest unchanged:
+  `permissions = ["storage", "activeTab", "scripting"]`, **no** `host_permissions`
+
+### Privacy / security audit
+- Dedicated local key `job-resume-history.v1` (never sync); no profile /
+  sensitive / settings / jobs / application-log key reused or overwritten;
+  `npm install` lockfile churn reverted (no dependency added — `pdf-lib`,
+  `react`, `zod` only, as before).
+- No API keys/credentials/tokens field exists in the strict schemas; sensitive
+  profile, legal/EEO/voluntary, compensation and government-ID fields are
+  structurally rejected (tested at entry and snapshot level).
+- No page content, full job description, HTML/scripts/selectors in records;
+  the snapshot is the existing tailored-resume schema only. Validation issues
+  and service messages are path+code / fixed text — no resume or profile
+  content in logs or errors.
+- No new manifest/host permission, no new dependency, no network/AI call
+  (fetch spies asserted across save/list/get/export/render), no telemetry.
+- Saving never submits an application or changes its status (application key
+  asserted byte-unchanged after a save).
+
+### Verified vs unverified
+- **Verified (unit/jsdom + `react-dom/server`):** all bullets above, including
+  snapshot immutability and export-from-snapshot. **Not** verified: a real
+  browser (real `chrome.storage.local`, real download click, options-page
+  interaction) — the UI is tested only through server-rendered markup and
+  mocked storage/download.
+
+### Limitations / known issues
+- No in-page preview of a generated or saved resume (none exists in this
+  build); opening a version shows labels, date and count-only section counts,
+  and export downloads the PDF.
+- The documented 200-version cap refuses new saves instead of trimming;
+  removing old versions is always a manual, confirmed delete. No history
+  export/import or sync — history lives only in this browser.
+- History records reference jobs by id; deleting a posting leaves the version
+  intact (orphan label), and the service never re-reads job postings for
+  integrity. Malformed history requires the explicit "Discard malformed
+  history" confirmation to recover (mirrors the application log).
+- `ResumeExport` keeps the version generated for the current profile+job in
+  component state; switching job (or profile) clears it, so the next save
+  generates from the then-current inputs (deterministic, documented).
+
+### Next
+- Optional: in-page resume/version preview, history export/import, or wiring
+  an application log link from a saved version — all separately scoped.
+
+---
+
 ## Done (2026-10-13, task 20 / Prompt 18: AI mapping provider readiness & privacy wording)
 Documentation/wording alignment plus a small provider-readiness audit. No
 mapping behavior, schema, permission or provider-configuration change.

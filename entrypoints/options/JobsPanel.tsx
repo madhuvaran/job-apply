@@ -15,6 +15,9 @@
  *   `calculateJobMatch` over the AI-safe profile + selected posting + loaded
  *   settings; the sensitive profile is never read here. The summary
  *   recalculates automatically when the selection or inputs change.
+ * - Resume section (Prompts 12 & 19): download a tailored PDF, explicitly
+ *   save a version to the local resume history, and manage saved versions
+ *   (open / export snapshot / delete with confirmation) below.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -43,6 +46,7 @@ import type { Profile } from '../../src/lib/profile';
 import { Row, Section } from './ui';
 import MatchSummary from './MatchSummary';
 import ResumeExport from './ResumeExport';
+import ResumeHistory from './ResumeHistory';
 import { startTrackingApplication } from '../../src/lib/applications';
 
 interface FormState {
@@ -114,6 +118,9 @@ export default function JobsPanel() {
   const [profileState, setProfileState] = useState<'loading' | 'ready'>('loading');
   const [settings, setSettings] = useState<Settings | null>(null);
   const [settingsState, setSettingsState] = useState<'loading' | 'ready'>('loading');
+  // Resume version history (Prompt 19): bumped when a version is saved so the
+  // history section below reloads without touching any other state.
+  const [historyRefresh, setHistoryRefresh] = useState(0);
 
   const refresh = useCallback(async () => {
     const res = await loadJobPostings();
@@ -392,11 +399,16 @@ export default function JobsPanel() {
                 {profileState === 'loading' ? (
                   <p className="hint">Loading profile…</p>
                 ) : (
-                  <ResumeExport profile={profile} job={selectedPosting} />
+                  <ResumeExport
+                    profile={profile}
+                    job={selectedPosting}
+                    onVersionSaved={() => setHistoryRefresh((n) => n + 1)}
+                  />
                 )}
               </Section>
             </>
           )}
+          <ResumeHistory refreshToken={historyRefresh} />
           <footer className="options-footer">
             <button type="button" className="primary" onClick={startCreate}>Add job manually</button>
           </footer>
