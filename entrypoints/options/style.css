@@ -247,3 +247,8 @@ select { max-width: 220px; }
 .match-summary-text { font-size: 0.9rem; color: #374151; margin: 4px 0 0; }
 .match-clear { margin-top: 8px; }
 
+
+/* Resume PDF export (Prompt 12). */
+.resume-export { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.resume-export .hint { margin: 0; }
+.resume-export .banner { margin: 0; width: 100%; }

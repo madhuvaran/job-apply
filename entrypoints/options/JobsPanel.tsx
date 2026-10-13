@@ -42,6 +42,7 @@ import {
 import type { Profile } from '../../src/lib/profile';
 import { Row, Section } from './ui';
 import MatchSummary from './MatchSummary';
+import ResumeExport from './ResumeExport';
 
 interface FormState {
   title: string;
@@ -348,22 +349,31 @@ export default function JobsPanel() {
             ))}
           </Section>
           {selectedPosting !== undefined && (
-            <Section title={`Match estimate — ${selectedPosting.title}`}>
-              {profileState === 'loading' || settingsState === 'loading' ? (
-                <p className="hint">Loading match inputs…</p>
-              ) : (
-                <>
-                  <MatchSummary profile={profile} job={selectedPosting} settings={settings} />
-                  <button
-                    type="button"
-                    className="match-clear"
-                    onClick={() => setSelectedId(null)}
-                  >
-                    Clear selection
-                  </button>
-                </>
-              )}
-            </Section>
+            <>
+              <Section title={`Match estimate — ${selectedPosting.title}`}>
+                {profileState === 'loading' || settingsState === 'loading' ? (
+                  <p className="hint">Loading match inputs…</p>
+                ) : (
+                  <>
+                    <MatchSummary profile={profile} job={selectedPosting} settings={settings} />
+                    <button
+                      type="button"
+                      className="match-clear"
+                      onClick={() => setSelectedId(null)}
+                    >
+                      Clear selection
+                    </button>
+                  </>
+                )}
+              </Section>
+              <Section title={`Resume PDF — ${selectedPosting.title}`}>
+                {profileState === 'loading' ? (
+                  <p className="hint">Loading profile…</p>
+                ) : (
+                  <ResumeExport profile={profile} job={selectedPosting} />
+                )}
+              </Section>
+            </>
           )}
           <footer className="options-footer">
             <button type="button" className="primary" onClick={startCreate}>Add job manually</button>

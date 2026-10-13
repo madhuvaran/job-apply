@@ -1,5 +1,101 @@
 # PROGRESS
 
+## Done (2026-10-13, task 14 / Prompt 12: fixed-layout ATS-friendly resume PDF)
+- **`pdf-lib@^1.17.1`** (new runtime dependency, lockfile committed) — MIT,
+  pure-JS, browser-only PDF writer: no network at runtime, no native code, no
+  extension permissions. Chosen over jsPDF because it is deterministic by
+  construction (pinned metadata), has an explicit strict API, and lets us
+  enforce the schema boundary + layout ourselves. `npm run build` bundles it
+  into the options chunk only.
+- **`src/lib/resume/pdf/text.ts`** (new) — pure `normalizeForPdf` (CRLF/tabs/
+  NBSP/zero-width/typographic punctuation → ASCII equivalents, meaning
+  preserved; accented Latin-1 kept verbatim) + `findUnsupportedCodePoints`/
+  `formatCodePoints` (report `U+XXXX` only — never the source text).
+- **`src/lib/resume/pdf/layout.ts`** (new) — pure, pdf-lib-free layout engine:
+  `buildBlocks(resume)` emits a block ONLY for each present schema field;
+  `wrapText` (word wrap + hard-break of over-long tokens like URLs);
+  `wrapBlocks`; `paginate` keeps a section heading with the first content line
+  and splits paragraphs taller than a page instead of clipping them. Renders
+  NO internal metadata (ids, `relevance`/`required`/`preferred`/`neutral`,
+  evidence refs, selection reasons/notes).
+- **`src/lib/resume/pdf/render.ts`** (new) — `renderResumePdf(input)`:
+  re-validates against the SAME strict `tailoredResumeSchema` (typed `invalid`
+  result, path+code only), normalizes text, refuses non-WinAnsi characters
+  (`unsupported-characters`, `U+XXXX`), draws A4 single-column selectable text
+  (Helvetica; name/headline/contact/rule/section/entry/bullet styles; `Page X
+  of Y` footer), and returns `{ blob, pageCount, filename }`. Deterministic:
+  metadata dates pinned to the PDF epoch + `useObjectStreams: false` → identical
+  input yields byte-identical output. Typed `render-failed` fallback; never
+  throws for expected user-data failures. No storage read, no network, no AI,
+  no sensitive import.
+- **`src/lib/resume/pdf/download.ts`** (new) — `downloadBlob(blob, filename,
+  env?)` with an injectable browser environment: creates a temporary object
+  URL, clicks a hidden anchor, removes it, and ALWAYS revokes the URL (even if
+  the click throws). Stores nothing.
+- **`src/lib/resume/pdf/export.ts`** (new) — `generateAndDownloadResume(profile,
+  job, deps?)` pipeline extracted from React so it is testable: tailor →
+  render → download, each failure a typed outcome with a FIXED, safe message
+  (`no-profile` / `insufficient` / `invalid` / `unsupported-characters` /
+  `render-failed` / `download-unavailable`). No fabrication on any failure path.
+- **`src/lib/resume/pdf/index.ts`** (new) — public surface. Kept as its own
+  subpath so the Prompt 11 tailoring module carries no PDF dependency.
+- **`entrypoints/options/ResumeExport.tsx`** (new) + **`JobsPanel.tsx`** —
+  minimal Options → Jobs integration: selecting a saved job now also shows a
+  `Resume PDF — <title>` section with a *Download tailored resume PDF* button
+  (disabled + `aria-busy` while generating or when no profile is loaded). Uses
+  the AI-safe `profile` already loaded by the panel; match-summary behavior is
+  untouched. `style.css` gained a small `.resume-export` block.
+- **Tests** (5 new files, **47 tests**; suite **398 passing (22 files)**):
+  `render.test.ts` (16) — valid render + filename/page count, selectable text
+  and NO image XObject, absent-section handling (no stray headings), 90-bullet
+  multi-page flow with every bullet + footer present, byte-identical
+  determinism, punctuation normalization (Café — “smart” … naïve → ASCII),
+  typed `unsupported-characters` (U+65E5, text never echoed), strict rejection
+  of `{}`/bad version/injected `apiKey`/`contactEmail` without leaking values,
+  no internal ids/relevance/reasons/notes rendered, no `@`/phone, job title not
+  rendered as experience, zero network calls, source scan proving no
+  sensitive/AI/fetch/storage imports, matching+tailoring API intact.
+  `export.test.ts` (7) — happy path downloads once with an `application/pdf`
+  Blob; download failure; empty profile → `insufficient` (no PDF); schema-
+  invalid profile → `invalid`; null → `no-profile`; non-WinAnsi → `unsupported-
+  characters`; zero network. `layout.test.ts` (12) — wrapping, long-URL
+  hard-break, present/absent sections, no internal metadata in text, headline
+  dedupe, conditional rule, heading kept with first line, tall-paragraph page
+  split with no dropped lines. `text.test.ts` (8) — normalization + punctuation
+  table, Latin-1 preservation, code-point detection/format. `download.test.ts`
+  (4) — URL created/clicked/revoked, revoke on click throw, typed failure
+  without a browser env, no storage writes.
+- **`README.md`** — new "Resume PDF export (fixed layout, ATS-friendly)"
+  section (dependency rationale, integrity guarantees, limitations) and the
+  tailoring heading/roadmap updated (PDF renderer now built).
+
+### Commands run this task (exit statuses captured inline)
+- `npx vitest run` → **exit 0, 398/398 passed** (351 baseline + 47 new)
+- `npm run compile` → **exit 0**
+- `npm run build` → **exit 0**; built manifest unchanged:
+  `permissions = ["storage", "activeTab", "scripting"]`, no `host_permissions`
+- Pre-commit inspection: no secrets, `.env`, `node_modules` or build artifacts
+  staged (`.wxt/tsconfig.json` ephemeral regeneration left uncommitted as in
+  every prior task; `.output/` untracked); matching (Prompt 09) and tailoring
+  (Prompt 11) source files were NOT modified.
+
+### Limitations / known issues
+- Built-in Helvetica (WinAnsi) covers Latin-1 only: non-Latin scripts/code
+  points raise a typed `unsupported-characters` error rather than being
+  transliterated, and no custom font is bundled.
+- No in-page PDF preview (the browser download is the delivery mechanism) and
+  no template/branding options; the download helper's real browser behavior is
+  verified at the unit level only (no browser e2e in this environment).
+- The options chunk grows (~515 kB minified) because pdf-lib is bundled into
+  the options page; acceptable for an options-only feature, not code-split yet.
+- Nothing claims the PDF passes any specific employer's ATS.
+
+### Next
+- Wire the AI interface into a user-visible feature and/or application form
+  autofill (roadmap), keeping PDF rendering isolated from tailoring/matching.
+
+---
+
 ## Done (2026-10-13, task 13 / Prompt 11: deterministic resume tailoring engine)
 - **`src/lib/resume/schemas.ts`** (new) — strict (`.strict()`) output
   contract `tailoredResumeSchema` (v1): provenance (`source` = posting

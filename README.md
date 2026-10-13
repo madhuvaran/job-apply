@@ -177,7 +177,7 @@ skill mentioned only in raw prose never becomes a requirement). With
 threshold is evaluated separately and insufficient data never counts as a
 pass.
 
-## Resume tailoring (deterministic, no AI — no PDF yet)
+## Resume tailoring (deterministic, no AI)
 
 `src/lib/resume/tailor.ts` exposes `tailorResume(profile, job)` which selects
 and reorders **existing** AI-safe profile content for one saved posting and
@@ -200,9 +200,37 @@ names) and is omitted when nothing supported exists — empty input yields an
 explicit `insufficient` result instead of fabricated content, and invalid
 input yields a typed `invalid` result (field paths only, no profile text).
 
-**PDF rendering is NOT implemented yet** — this task produced the content
-model only, for a later fixed-layout renderer. Nothing here claims an ATS
-will pass the result.
+## Resume PDF export (fixed layout, ATS-friendly)
+
+`src/lib/resume/pdf/` renders the validated `TailoredResume` payload to a
+single-column, **selectable-text** PDF using `pdf-lib` (MIT, browser-only,
+pure JS — no network, no native code, no permissions). `renderResumePdf(input)`
+re-validates the input against the SAME strict `tailoredResumeSchema`
+(invalid input yields a typed `invalid` result) and returns a `Blob` plus the
+page count and a safe filename.
+
+Content integrity: the renderer is a presentation layer only — it never
+invents, paraphrases or drops content, and it renders no field outside the
+schema (no contact details, evidence ids, relevance/selection metadata or job
+text). A4 portrait, conventional margins, standard section headings,
+Helvetica, and `Page X of Y` footers. Headings stay with their first item, and
+long paragraphs/URLs/long words wrap or split across pages rather than being
+clipped. Output is deterministic (identical input → byte-identical PDF). Text
+outside the built-in font's repertoire returns a typed `unsupported-characters`
+result (reporting only `U+XXXX` code points) instead of a corrupted file.
+
+In **Options → Jobs**, selecting a saved job shows a **Resume PDF** section
+with a *Download tailored resume PDF* button (disabled until a profile is
+loaded). It runs `tailorResume` → `renderResumePdf` → an isolated download
+helper (the temporary object URL is revoked immediately; nothing is stored).
+Invalid or insufficient tailoring explains the problem and generates no file.
+No AI, no network, no storage writes; the sensitive profile is never read.
+
+Limitations: the built-in Helvetica fonts cover Latin-1 only, so non-Latin
+scripts are refused rather than transliterated; there is no in-page PDF
+*preview* (the file is downloaded), no template/branding options, and no
+bundled custom fonts. Nothing claims the PDF will pass a specific employer's
+ATS.
 
 ## Permissions
 
@@ -229,7 +257,7 @@ validated storage service, profile editor, settings & privacy model, job-posting
 model with manual intake, user-triggered current-page capture, the
 provider-agnostic AI interface (Prompt 06), the deterministic job match
 estimate (Prompt 09 — library + tests; formula above), its match summary UI
-in Options → Jobs (Prompt 10), and the deterministic resume tailoring engine
-(Prompt 11 — content model only). **Not yet built: PDF rendering for the
-tailored content, its options UI, and any wiring of the AI interface into
-features.**
+in Options → Jobs (Prompt 10), the deterministic resume tailoring engine
+(Prompt 11), and the fixed-layout ATS-friendly resume PDF export + Options →
+Jobs download action (Prompt 12). **Not yet built: wiring the AI interface
+into features, application form autofill, and application logging.**
