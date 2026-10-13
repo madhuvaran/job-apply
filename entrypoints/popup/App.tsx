@@ -1,33 +1,49 @@
 /**
- * Popup — user-triggered "Capture current job" flow (Prompt 08).
+ * Popup — user-triggered job capture (Prompt 08) and autofill (Prompt 14).
  *
- * - The active tab is inspected ONLY after the user clicks the capture
- *   button. Opening this popup grants `activeTab` for the current tab; we
- *   never read pages in the background, never collect cookies, and never
- *   scrape behind logins (if the page shows a login wall, capture yields
- *   whatever job text is visibly rendered — review the preview!).
- * - The content-script response is untrusted: it is zod-validated before use
- *   (`validateCaptureResponse`). Fields can be corrected before saving.
- * - Saving writes a `page-capture` JobPosting through the validated storage
- *   service. Cancel writes nothing.
- * - Unsupported pages (chrome://, PDFs, files) and permission denial are
- *   handled with explicit fallbacks to manual intake.
+ * - The active tab is inspected ONLY after a user click. Opening this popup
+ *   grants `activeTab` for the current tab; nothing runs in the background and
+ *   no page is read without an explicit action.
+ * - Autofill is a two-step, explicit flow: the popup asks the content script
+ *   for a VALUE-FREE list of form-field descriptors, builds a plan from your
+ *   saved profile, shows a review of what will be filled vs. left manual, and
+ *   only fills after you confirm. Nothing is submitted and no navigation is
+ *   triggered. Cancel makes no changes.
+ * - Page responses are untrusted: they are zod-validated before use.
+ * - Sensitive contact/legal answers are read from the separate sensitive store
+ *   and are never sent to the AI provider (autofill does not touch the AI).
  */
 import { useCallback, useState } from 'react';
 import { browser } from 'wxt/browser';
+import { CAPTURE_REQUEST_TYPE, validateCaptureResponse } from '../../src/lib/capture';
 import {
-  CAPTURE_REQUEST_TYPE,
-  validateCaptureResponse,
-} from '../../src/lib/capture';
+  AUTOFILL_FILL_REQUEST_TYPE,
+  AUTOFILL_SCAN_REQUEST_TYPE,
+  buildFillPlan,
+  validateFillResponse,
+  validateScanResponse,
+  type FillPlan,
+  type PlanReviewEntry,
+} from '../../src/lib/autofill';
 import {
   createJobPosting,
   validateJobPostingInput,
   MAX_RAW_DESCRIPTION_CHARS,
 } from '../../src/lib/job-posting';
-import { upsertJobPosting } from '../../src/lib/storage';
+import { loadProfile, loadSensitiveProfile, upsertJobPosting } from '../../src/lib/storage';
 import './App.css';
 
-type Stage = 'idle' | 'capturing' | 'preview' | 'saving' | 'saved' | 'error';
+type Stage =
+  | 'idle'
+  | 'capturing'
+  | 'preview'
+  | 'saving'
+  | 'saved'
+  | 'error'
+  | 'af-scanning'
+  | 'af-preview'
+  | 'af-filling'
+  | 'af-done';
 
 interface FormState {
   title: string;
@@ -35,6 +51,12 @@ interface FormState {
   location: string;
   url: string;
   description: string;
+}
+
+interface AfSummary {
+  filled: number;
+  skipped: number;
+  total: number;
 }
 
 const EMPTY_FORM: FormState = { title: '', company: '', location: '', url: '', description: '' };
@@ -45,6 +67,10 @@ function App() {
   const [truncated, setTruncated] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const [errorText, setErrorText] = useState<string | null>(null);
+  // Autofill review state (held in memory only; never stored).
+  const [afReview, setAfReview] = useState<PlanReviewEntry[]>([]);
+  const [afPlan, setAfPlan] = useState<FillPlan | null>(null);
+  const [afSummary, setAfSummary] = useState<AfSummary | null>(null);
 
   const fail = useCallback((message: string) => {
     setErrorText(message);
@@ -55,46 +81,53 @@ function App() {
     void browser.runtime.openOptionsPage();
   }, []);
 
+  /** The active tab's id + URL, or a fixed failure message. */
+  const activeTab = useCallback(async (): Promise<{ tabId: number; url: string } | null> => {
+    const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+    const tab = tabs[0];
+    if (!tab?.id) {
+      fail('No active tab found. Open an application form page and try again.');
+      return null;
+    }
+    const url = tab.url ?? '';
+    if (!/^https?:\/\//i.test(url)) {
+      fail('This page is not supported (browser pages, PDFs and local files).');
+      return null;
+    }
+    return { tabId: tab.id, url };
+  }, [fail]);
+
+  /**
+   * Send a message to the active tab, injecting the content script on demand
+   * (activeTab was granted when you opened this popup). Throws when blocked.
+   */
+  const sendToTab = useCallback(async (tabId: number, message: unknown): Promise<unknown> => {
+    try {
+      return await browser.tabs.sendMessage(tabId, message);
+    } catch {
+      await browser.scripting.executeScript({
+        target: { tabId },
+        files: ['/content-scripts/content.js'],
+      });
+      return await browser.tabs.sendMessage(tabId, message);
+    }
+  }, []);
+
   /* ---------------- capture (user-triggered ONLY) ---------------- */
   const onCapture = useCallback(async () => {
     setErrorText(null);
     setErrors([]);
     setStage('capturing');
     try {
-      const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-      const tab = tabs[0];
-      if (!tab?.id) {
-        fail('No active tab found. Open a job listing page and try again.');
-        return;
-      }
-      const url = tab.url ?? '';
-      if (!/^https?:\/\//i.test(url)) {
-        fail(
-          'This page cannot be captured (browser pages, PDFs and local files are not supported). Use manual intake instead.',
-        );
-        return;
-      }
-
-      // 1) ask an already-injected content script; 2) inject on demand
-      // (activeTab was granted when you opened this popup); 3) fail politely.
+      const tab = await activeTab();
+      if (tab === null) return;
       let response: unknown;
       try {
-        response = await browser.tabs.sendMessage(tab.id, { type: CAPTURE_REQUEST_TYPE });
+        response = await sendToTab(tab.tabId, { type: CAPTURE_REQUEST_TYPE });
       } catch {
-        try {
-          await browser.scripting.executeScript({
-            target: { tabId: tab.id },
-            files: ['/content-scripts/content.js'],
-          });
-          response = await browser.tabs.sendMessage(tab.id, { type: CAPTURE_REQUEST_TYPE });
-        } catch {
-          fail(
-            'Chrome blocked capture on this page (permission denied or unsupported site). Use manual intake instead.',
-          );
-          return;
-        }
+        fail('Chrome blocked capture on this page (permission denied or unsupported site). Use manual intake instead.');
+        return;
       }
-
       const parsed = validateCaptureResponse(response);
       if (!parsed.ok) {
         fail(`The page returned data we could not read (${parsed.errors[0] ?? 'invalid response'}).`);
@@ -117,9 +150,93 @@ function App() {
     } catch {
       fail('Could not reach this tab. Re-open the popup and try again.');
     }
-  }, [fail]);
+  }, [activeTab, fail, sendToTab]);
 
-  /* ---------------- save / cancel ---------------- */
+  /* ---------------- autofill: scan + plan (no changes yet) ---------------- */
+  const onAutofillStart = useCallback(async () => {
+    setErrorText(null);
+    setAfReview([]);
+    setAfPlan(null);
+    setAfSummary(null);
+    setStage('af-scanning');
+    try {
+      const tab = await activeTab();
+      if (tab === null) return;
+
+      let scanRaw: unknown;
+      try {
+        scanRaw = await sendToTab(tab.tabId, { type: AUTOFILL_SCAN_REQUEST_TYPE });
+      } catch {
+        fail('Chrome blocked reading this page (permission denied or unsupported site).');
+        return;
+      }
+      const scan = validateScanResponse(scanRaw);
+      if (!scan.ok) {
+        fail(`The page returned fields we could not read (${scan.errors[0] ?? 'invalid response'}).`);
+        return;
+      }
+      if (scan.value.kind === 'error') {
+        fail(scan.value.message);
+        return;
+      }
+
+      const [profileRes, sensitiveRes] = await Promise.all([loadProfile(), loadSensitiveProfile()]);
+      const built = buildFillPlan({
+        descriptors: scan.value.descriptors,
+        profile: profileRes.ok ? profileRes.data : null,
+        sensitive: sensitiveRes.ok ? sensitiveRes.data : null,
+      });
+      if (!built.ok) {
+        fail('Your saved profile could not be used for autofill. Check it in Options and try again.');
+        return;
+      }
+      setAfReview(built.review);
+      setAfPlan(built.plan);
+      setStage('af-preview');
+    } catch {
+      fail('Could not reach this tab. Re-open the popup and try again.');
+    }
+  }, [activeTab, fail, sendToTab]);
+
+  /* ---------------- autofill: execute (after explicit confirm) ---------------- */
+  const onAutofillConfirm = useCallback(async () => {
+    if (afPlan === null) return;
+    setStage('af-filling');
+    try {
+      const tab = await activeTab();
+      if (tab === null) return;
+      let response: unknown;
+      try {
+        response = await sendToTab(tab.tabId, { type: AUTOFILL_FILL_REQUEST_TYPE, plan: afPlan });
+      } catch {
+        fail('Chrome blocked filling this page. Nothing was changed.');
+        return;
+      }
+      const parsed = validateFillResponse(response);
+      if (!parsed.ok) {
+        fail('The page returned a result we could not read. Some fields may have been filled.');
+        return;
+      }
+      if (parsed.value.kind === 'error') {
+        fail('The fill plan could not be applied. Nothing was changed.');
+        return;
+      }
+      const report = parsed.value.report;
+      setAfSummary({ filled: report.filledCount, skipped: report.skippedCount, total: report.results.length });
+      setStage('af-done');
+    } catch {
+      fail('Could not reach this tab. Nothing was changed.');
+    }
+  }, [activeTab, afPlan, fail, sendToTab]);
+
+  const onAutofillCancel = useCallback(() => {
+    setAfReview([]);
+    setAfPlan(null);
+    setAfSummary(null);
+    setStage('idle'); // nothing was written or filled
+  }, []);
+
+  /* ---------------- save / cancel (capture) ---------------- */
   const onSave = useCallback(async () => {
     setErrors([]);
     const fields = {
@@ -159,6 +276,9 @@ function App() {
   const set = (key: keyof FormState) => (value: string) =>
     setForm((f) => ({ ...f, [key]: value }));
 
+  const fillable = afReview.filter((r) => r.decision === 'fill');
+  const manual = afReview.filter((r) => r.decision === 'manual');
+
   return (
     <div className="popup">
       <h1>Job Apply</h1>
@@ -166,29 +286,85 @@ function App() {
       {stage === 'idle' && (
         <div className="pane">
           <p className="hint">
-            Save the job you are looking at. The page is read <strong>only after you click</strong>;
-            nothing runs in the background. Review and correct everything before saving.
+            Save the job you are looking at, or fill the application form with your saved answers.
+            The page is read <strong>only after you click</strong>; nothing runs in the background.
           </p>
           <button type="button" className="primary" onClick={() => void onCapture()}>
             Capture current job
           </button>
+          <button type="button" onClick={() => void onAutofillStart()}>
+            Autofill this application form
+          </button>
           <button type="button" onClick={openOptions}>Open jobs &amp; settings</button>
           <p className="hint small">
-            Best-effort sites: pages with JobPosting structured data (Greenhouse, Lever, Workday,
-            Indeed, LinkedIn job pages) and simple career pages. Login walls and app-heavy pages may
-            yield little — use manual intake there.
+            Autofill previews every field and fills only after you confirm. It never submits the
+            form and never fills passwords, payment, demographic, compensation or legal fields.
           </p>
         </div>
       )}
 
       {stage === 'capturing' && <p className="pane">Reading this page&hellip;</p>}
+      {stage === 'af-scanning' && <p className="pane">Reading form fields&hellip;</p>}
+      {stage === 'af-filling' && <p className="pane">Filling after your confirmation&hellip;</p>}
 
       {stage === 'error' && (
         <div className="pane">
           <p className="error-box" role="alert">{errorText}</p>
-          <button type="button" className="primary" onClick={() => void onCapture()}>Try again</button>
-          <button type="button" onClick={openOptions}>Use manual intake</button>
-          <button type="button" onClick={() => setStage('idle')}>Back</button>
+          <button type="button" className="primary" onClick={() => setStage('idle')}>Back</button>
+          <button type="button" onClick={openOptions}>Open jobs &amp; settings</button>
+        </div>
+      )}
+
+      {stage === 'af-preview' && (
+        <div className="pane">
+          <p className="hint">
+            Review before filling. Nothing is filled until you confirm, and the form is never
+            submitted.
+          </p>
+          <h2 className="af-heading">Will fill ({fillable.length})</h2>
+          {fillable.length === 0 ? (
+            <p className="hint">Nothing can be filled automatically — see below.</p>
+          ) : (
+            <ul className="af-list">
+              {fillable.map((r) => (
+                <li key={r.fieldId} className="af-row">
+                  <strong>{r.displayLabel}</strong>
+                  <span className="af-value">{r.proposedValue}</span>
+                  <span className="hint small">{r.source === 'sensitive' ? 'from your sensitive details' : 'from your profile'}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <h2 className="af-heading">Needs manual input ({manual.length})</h2>
+          <ul className="af-list">
+            {manual.map((r) => (
+              <li key={r.fieldId} className="af-row af-manual">
+                <strong>{r.displayLabel}</strong>
+                <span className="hint small">{r.reason}</span>
+              </li>
+            ))}
+          </ul>
+          <button
+            type="button"
+            className="primary"
+            disabled={fillable.length === 0}
+            onClick={() => void onAutofillConfirm()}
+          >
+            Confirm &amp; fill {fillable.length} field{fillable.length === 1 ? '' : 's'}
+          </button>
+          <button type="button" onClick={onAutofillCancel}>Cancel — change nothing</button>
+        </div>
+      )}
+
+      {stage === 'af-done' && afSummary !== null && (
+        <div className="pane">
+          <p>
+            Filled <strong>{afSummary.filled}</strong> of {afSummary.total} planned field
+            {afSummary.total === 1 ? '' : 's'} ({afSummary.skipped} skipped). Values are not shown
+            here.
+          </p>
+          <p className="hint">Review the form and complete anything left blank. Nothing was submitted.</p>
+          <button type="button" className="primary" onClick={() => setStage('idle')}>Done</button>
         </div>
       )}
 
@@ -236,11 +412,7 @@ function App() {
               ))}
             </ul>
           )}
-          <button
-            type="button"
-            className="primary"
-            onClick={() => void onSave()}
-          >
+          <button type="button" className="primary" onClick={() => void onSave()}>
             Save posting
           </button>
           <button type="button" onClick={onCancel}>Cancel</button>

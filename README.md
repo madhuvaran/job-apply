@@ -278,6 +278,60 @@ Behavior:
 - **Filter & sort** — filter by status and sort by last updated, application
   date (missing last) or date created; ordering is deterministic.
 
+## Autofill (deterministic foundation, no AI)
+
+`src/lib/autofill/` is the first, conservative autofill foundation. It fills
+**only** fields it can classify unambiguously from your saved answers, and it
+never contacts an AI provider or the network. It never submits a form, and it
+never fills a field without your explicit confirmation.
+
+The engine is split so each part is independently testable:
+
+| Module | Responsibility |
+|---|---|
+| `schemas.ts` | `.strict()` **value-free** field descriptors, the reviewed fill plan, and the per-field report |
+| `classify.ts` | deterministic classification from label / `aria-label` / `name` / `id` / `autocomplete` / input type |
+| `plan.ts` | maps recognised fields to explicitly supported saved answers (missing answer → manual entry) |
+| `execute.ts` | isolated executor that applies **only** a validated plan |
+| `page.ts` | value-free form scanning + the content-script scan/fill messages |
+
+**Supported field types** (mapped to saved data — nothing is invented):
+
+| Field | Saved source |
+|---|---|
+| First name, last name | sensitive profile `contact` |
+| Email, phone | sensitive profile `contact` |
+| City | sensitive profile `contact.cityLabel` |
+| State/region, country | *recognised but no saved source exists* → reported as "complete manually" |
+| LinkedIn URL | profile `linkedin` |
+| Portfolio URL | profile `portfolio` |
+| Skills | profile `skills` (names joined) |
+| Professional summary | profile `summary` |
+| Work authorization | sensitive `legal.workAuthorization` — **choice fields only**, and only when not `undisclosed` |
+| Sponsorship | sensitive `legal.sponsorshipNeeded` (Yes/No) — **choice fields only** |
+
+**Never filled (excluded categories):** passwords/authentication, one-time and
+verification codes, payment/card/bank details, CAPTCHA/bot-detection,
+equal-opportunity & voluntary demographics (gender, race, veteran, disability,
+religion, sexual orientation, …), compensation/salary, and legal
+declarations/consent/attestation. Generic labels ("Name", "Other", "Details",
+"Additional information") and any field that is ambiguous or matches more than
+one category are left for manual entry with a typed reason.
+
+**How it works (user-confirmed, opt-in):** in the popup, *Autofill this
+application form* reads only form-control **metadata** (labels/name/id/
+autocomplete/type — never values), shows a review split into *Will fill* and
+*Needs manual input*, and fills **only after you click Confirm**. Cancel makes
+no changes. A completion summary reports counts, **not** the values. Select,
+radio and checkbox fields are filled only on an unambiguous match; disabled,
+read-only, hidden and detached fields are skipped. The form is never submitted
+and no navigation is triggered.
+
+**Integration limits:** this uses the existing `activeTab` + `scripting`
+permission model and the current content-script channel — no new permissions
+and no host-permission broadening. **Workday-specific handling and AI-assisted
+semantic field mapping are NOT implemented** in this task.
+
 ## Permissions
 
 `storage` (validated local data), `activeTab` (current tab only, granted when you
@@ -305,6 +359,7 @@ provider-agnostic AI interface (Prompt 06), the deterministic job match
 estimate (Prompt 09 — library + tests; formula above), its match summary UI
 in Options → Jobs (Prompt 10), the deterministic resume tailoring engine
 (Prompt 11), the fixed-layout ATS-friendly resume PDF export + Options → Jobs
-download action (Prompt 12), and the local application log + Options →
-Applications tab (Prompt 13). **Not yet built: wiring the AI interface into
-features and application form autofill.**
+download action (Prompt 12), the local application log + Options → Applications
+tab (Prompt 13), and the deterministic autofill foundation (Prompt 14).
+**Not yet built: Workday-specific handling, AI-assisted field mapping, and the
+deeper application-form automation.**

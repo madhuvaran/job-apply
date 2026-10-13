@@ -1,5 +1,116 @@
 # PROGRESS
 
+## Done (2026-10-13, task 16 / Prompt 14: deterministic autofill foundation)
+- **`src/lib/autofill/schemas.ts`** (new) — `.strict()` contracts: VALUE-FREE
+  `fieldDescriptorSchema` (fieldId, kind text/textarea/select/radio/checkbox,
+  inputType, labelText, ariaLabel, name, elementId, autocomplete, placeholder —
+  no `value` field exists), `fieldDescriptorsSchema` (cap 200),
+  `fillInstructionSchema`/`fillPlanSchema` (value min-1, `source:
+  profile|sensitive`, `requiresConfirmation`, cap 200), `fillReportSchema` +
+  `FILL_STATUSES` (filled/not-found/disconnected/disabled/read-only/hidden/
+  unsupported-element/no-match/error), `FIELD_CATEGORIES`, `formatIssues`.
+- **`src/lib/autofill/classify.ts`** (new) — deterministic classifier over
+  labelText/ariaLabel/placeholder/name/id/autocomplete (+ input type). Exclusions
+  run FIRST and win: password/auth, OTP/2FA, payment/bank, CAPTCHA/bot, EEO/
+  voluntary demographics, compensation, legal/consent/attestation, hidden
+  inputs. Strong signals (`autocomplete`, `input[type]`) preferred over
+  word-bounded label patterns; generic labels (Name/Other/Details/Additional
+  information) → ambiguous; multiple matches → ambiguous; none → unsupported.
+  Choice kinds (radio/checkbox) only allow choice categories. Reasons are fixed
+  literals — no values exist to leak.
+- **`src/lib/autofill/plan.ts`** (new) — `buildFillPlan({descriptors, profile,
+  sensitive})` re-validates all inputs against the EXISTING profile/sensitive
+  schemas (invalid → typed `invalid-input` with path+message only). Maps
+  firstName/lastName/email/phone/city → sensitive contact; linkedin/portfolio/
+  skills/summary → AI-safe profile; workAuthorization/sponsorship → sensitive
+  legal, CHOICE fields only and never `undisclosed`. state/country are
+  recognised but have no saved source → manual. Missing answer → manual entry
+  (never ""/false/guess). Per-field review entries carry decision + fixed
+  reason (+ proposedValue for display only); sensitive entries tagged
+  `source:'sensitive'` and kept out of profile payloads. Pure, deterministic,
+  no DOM/no AI/no network.
+- **`src/lib/autofill/execute.ts`** (new) — isolated executor: re-validates the
+  plan (`invalid-plan` → executes nothing), resolves targets by fieldId, checks
+  connected/disabled/read-only/hidden, fills text/textarea via the NATIVE value
+  setter + `input`+`change` events, matches select options and radio groups/
+  checkboxes only on an UNAMBIGUOUS label/value match, and returns per-field
+  typed outcomes with fixed, value-free messages. Never submits a form, never
+  clicks buttons, never navigates.
+- **`src/lib/autofill/page.ts`** (new) — `collectFieldDescriptors(root)` reads
+  ONLY control metadata (never values), skips
+  hidden/submit/button/image/reset, groups radios by (form,name) into ONE
+  descriptor with the fieldset legend, caps at `MAX_SCAN_FIELDS`.
+  `createAutofillSession(doc)` handles the two strict messages
+  (`job-apply/autofill-scan`, `job-apply/autofill-fill`) and returns
+  `undefined` for foreign messages; scan→fill holds element refs in memory only.
+  `validateScanResponse`/`validateFillResponse` for the popup.
+- **`src/lib/autofill/index.ts`** (new) — public surface.
+- **`entrypoints/content.ts`** — chains the autofill session after the capture
+  handler in the SAME listener (capture first, then autofill; foreign messages
+  still return undefined). No new matches, no manifest change.
+- **`entrypoints/popup/App.tsx`** — smallest safe user-initiated flow: an
+  *Autofill this application form* button → scan → load profile + sensitive
+  (absent tolerated) → build plan → review pane (*Will fill* vs *Needs manual
+  input*) → **Confirm & fill** or *Cancel — change nothing* → count-only
+  summary. Reuses the existing activeTab + `scripting.executeScript` injection
+  fallback; responsive `aria-busy`/disabled states. No auto-fill, no submit.
+- **Tests** (5 new files, **48 tests**; suite **500 passing (31 files)**):
+  `classify.test.ts` (12) — normalization, supported fields, weak-substring and
+  generic/ambiguous cases, choice-kind limits, non-form controls, and the full
+  exclusion table. `plan.test.ts` (8) — ordered planning with correct sources,
+  choice-only work-auth/sponsorship, missing answers (incl. `undisclosed`),
+  excluded-field omission, sensitive separation (no voluntary/compensation in
+  the plan JSON), determinism + no input mutation, invalid-input issues without
+  values. `execute.test.ts` (13, jsdom) — native-setter fill with input+change,
+  textarea, invalid plan no-op, disabled/read-only/hidden/disconnected/
+  not-found/unsupported-element gates, only-planned-fields-touched, select
+  unambiguous vs ambiguous/absent, radio unique vs duplicate (no guessing),
+  checkbox match/skip, no submit/click, value-free messages. `page.test.ts`
+  (10, jsdom) — value-free descriptors (a prefilled value never appears), skip
+  list, radio grouping, scan cap, session scan/fill/foreign-message/no-fields,
+  invalid-plan rejection, validator junk rejection. `boundaries.test.ts` (5) —
+  strict-schema rejection, zero network across classify→plan→execute, source
+  scan (no AI/fetch/direct storage), and a manifest guard proving permissions
+  are still exactly `storage/activeTab/scripting` with no host permissions.
+- **`README.md`** — new "Autofill (deterministic foundation, no AI)" section:
+  supported field table, excluded categories, user-confirmation behavior,
+  integration limits, and explicit "Workday-specific handling and AI-assisted
+  semantic field mapping are NOT implemented"; roadmap updated.
+
+### Commands run this task (exit statuses captured inline)
+- `npx vitest run` → **exit 0, 500/500 passed** (452 baseline + 48 new)
+- `npm run compile` → **exit 0**
+- `npm run build` → **exit 0**; built manifest unchanged:
+  `permissions = ["storage", "activeTab", "scripting"]`, **no** `host_permissions`
+- Pre-commit inspection: no secrets, `.env`, `node_modules` or build artifacts
+  staged (`.wxt/tsconfig.json` ephemeral regeneration left uncommitted as in
+  every prior task; `.output/` untracked); matching (Prompt 09), tailoring
+  (Prompt 11), PDF (Prompt 12) and application-log (Prompt 13) sources were NOT
+  modified; `wxt.config.ts` untouched.
+
+### Limitations / known issues
+- **Workday-specific handling and AI-assisted semantic field mapping are NOT
+  implemented** (explicitly out of scope).
+- State/region and country are recognised but have no saved source in the
+  current schemas, so they are always reported as manual entry.
+- Work-authorization/sponsorship answers are only planned for choice controls
+  (select/radio/checkbox); a free-text work-authorization field is left manual.
+- The popup scan/session holds element references in memory for one scan→fill
+  round trip only; a page navigation between scan and fill yields per-field
+  `not-found`/`disconnected` results (no wrong-element writes).
+- The content script is declared only for the starter `google.com` match; other
+  sites rely on the existing activeTab-triggered injection fallback.
+- Executor/UX verified with jsdom + pure tests; no real-browser e2e here.
+- `AutofillScanResponse | AutofillFillResponse` share a `kind: 'ok'` variant, so
+  consumers must narrow by property (e.g. `'report' in value`); harmless but
+  worth tidying if the message surface grows.
+
+### Next
+- Workday-specific field handling and/or AI-assisted semantic mapping (with the
+  existing backend-proxy AI interface), keeping autofill local and confirmed.
+
+---
+
 ## Done (2026-10-13, task 15 / Prompt 13: local application log)
 - **`src/lib/applications/schemas.ts`** (new) — strict (`.strict()`) model:
   `applicationSchema` { generated `id`, `jobId`, `status`, optional
