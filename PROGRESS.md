@@ -12,6 +12,11 @@
   - Selects: candidate options exclude placeholders (`Select one`, empty value,
     disabled/hidden) and disabled options; an ambiguous/absent match stays
     `no-match` — the first option is never chosen just because it exists.
+  - **`<select multiple>` is detected and NEVER filled** (the plan carries a
+    single string answer): it returns the existing typed `unsupported-element`
+    with a fixed, value-free message and leaves every selected option exactly as
+    it was. Ordinary single-select behavior (placeholder exclusion, unique
+    matching, post-fill verification) is unchanged.
   - Radio groups scoped by (form, `name`); a checkbox/radio already in the
     planned state is left untouched (no unnecessary toggle, no event).
     Post-fill state is verified before success.
@@ -29,10 +34,12 @@
 - **`entrypoints/popup/App.tsx`** — carries `scanId` from scan → confirm, sends
   it with the fill request, and surfaces a distinct stale-session message;
   cancel/restart clear it. Confirmation requirement unchanged.
-- **Tests** (2 new files, **23 tests**; suite **523 passing (33 files)**):
-  `hardening.test.ts` (12) — React-controlled input/textarea native-setter +
+- **Tests** (2 new files, **27 tests**; suite **527 passing (33 files)**):
+  `hardening.test.ts` (16) — React-controlled input/textarea native-setter +
   bubbling events; `verify-failed` with no events; placeholder never selected;
-  real option still selected; ambiguous select unchanged; radio-group isolation;
+  real option still selected; ambiguous select unchanged; multi-select skipped
+  with selections left unchanged and a value-free result while a single-select
+  still fills; radio-group isolation;
   already-checked checkbox not toggled; unchecked checkbox checked once;
   disabled/read-only/hidden/inert/disconnected skipped; no submit/click; error
   messages carry no values. `session.test.ts` (11) — scanId minted; matching
@@ -42,11 +49,15 @@
   structure changes; replaced element → `disconnected` and left untouched;
   error responses never contain a planned value. Existing autofill, matching,
   tailoring, PDF, application-log and storage suites unchanged and passing.
+- **Follow-up safety fix (committed separately)** — multi-select detection in
+  the executor (`<select multiple>` → `unsupported-element`, selections
+  untouched). No profile schema, planner, classifier, UI flow, manifest,
+  permission or dependency changes.
 - **`README.md`** — autofill section documents the hardening (native setter +
   verification, placeholder/state rules, per-scan session token) and its limits.
 
 ### Commands run this task (exit statuses captured inline)
-- `npx vitest run` → **exit 0, 523/523 passed** (500 baseline + 23 new)
+- `npx vitest run` → **exit 0, 527/527 passed** (500 baseline + 27 new)
 - `npm run compile` → **exit 0**
 - `npm run build` → **exit 0**; built manifest unchanged:
   `permissions = ["storage", "activeTab", "scripting"]`, **no** `host_permissions`

@@ -24,6 +24,9 @@
  * - Select options must match unambiguously AND must not be a placeholder
  *   ("Select one", an empty value, a disabled/hidden option, …); the first
  *   option is never chosen just because it exists.
+ * - `<select multiple>` controls are NEVER filled: the plan carries a single
+ *   string answer, so a multi-select is reported `unsupported-element` and every
+ *   selected option is left exactly as it was.
  * - Radio groups are scoped by (form, name); a checkbox/radio already in the
  *   planned state is left untouched (no unnecessary toggle, no event).
  * - Per-field messages are fixed literals; planned/page values never appear in
@@ -200,6 +203,9 @@ function fillTextLike(element: Element, plannedValue: string): FillStatus {
 
 function fillSelect(element: Element, plannedValue: string): FillStatus {
   if (!(element instanceof HTMLSelectElement)) return 'unsupported-element';
+  // A multi-select needs a set of answers; the plan only carries a single
+  // string, so it is deliberately left untouched rather than guessed.
+  if (element.multiple === true) return 'unsupported-element';
   const target = normalizeText(plannedValue);
   const matches = Array.from(element.options).filter(
     (option) =>

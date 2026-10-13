@@ -32,6 +32,12 @@ const FIXTURES = {
   reactTextInput: '<label for="fn">First name</label><input id="fn" name="firstName" type="text" />',
   reactTextarea:
     '<label for="sum">Professional summary</label><textarea id="sum" name="summary"></textarea>',
+  selectMultiple:
+    '<label for="ms">Choose all that apply</label>' +
+    '<select id="ms" name="multi" multiple>' +
+    '<option value="MultiOption-Alpha" selected>MultiOption-Alpha</option>' +
+    '<option value="MultiOption-Beta" selected>MultiOption-Beta</option>' +
+    '<option value="MultiOption-Gamma">MultiOption-Gamma</option></select>',
   selectPlaceholder:
     '<label for="sp">Will you require sponsorship?</label>' +
     '<select id="sp" name="sponsorship">' +
@@ -190,6 +196,63 @@ describe('select hardening', () => {
     if (!result.ok) throw new Error('expected ok');
     expect(result.report.results[0]?.status).toBe('no-match');
     expect(select.value).toBe('a');
+  });
+});
+
+describe('multi-select hardening', () => {
+  it('skips a <select multiple> with a typed unsupported-element result', () => {
+    document.body.innerHTML = FIXTURES.selectMultiple;
+    const select = document.getElementById('ms') as HTMLSelectElement;
+    const result = executeFillPlan(plan([instruction('ms', 'MultiOption-Gamma', 'skills')]), [
+      { fieldId: 'ms', element: select },
+    ]);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.report.results[0]?.status).toBe('unsupported-element');
+    expect(result.report.filledCount).toBe(0);
+  });
+
+  it('leaves every existing selected option of a multi-select unchanged', () => {
+    document.body.innerHTML = FIXTURES.selectMultiple;
+    const select = document.getElementById('ms') as HTMLSelectElement;
+    const before = Array.from(select.selectedOptions).map((o) => o.value);
+
+    executeFillPlan(plan([instruction('ms', 'MultiOption-Alpha', 'skills')]), [
+      { fieldId: 'ms', element: select },
+    ]);
+
+    const after = Array.from(select.selectedOptions).map((o) => o.value);
+    expect(after).toEqual(before);
+    expect(after).toEqual(['MultiOption-Alpha', 'MultiOption-Beta']);
+    // The option that matched the planned value is NOT newly selected.
+    expect((select.querySelector('option[value="MultiOption-Gamma"]') as HTMLOptionElement).selected).toBe(
+      false,
+    );
+  });
+
+  it('never exposes the planned answer or existing option values in the result', () => {
+    document.body.innerHTML = FIXTURES.selectMultiple;
+    const select = document.getElementById('ms') as HTMLSelectElement;
+    const result = executeFillPlan(plan([instruction('ms', 'Planned-Answer-SECRET', 'skills')]), [
+      { fieldId: 'ms', element: select },
+    ]);
+    if (!result.ok) throw new Error('expected ok');
+    const json = JSON.stringify(result.report);
+    expect(json).not.toContain('Planned-Answer-SECRET');
+    expect(json).not.toContain('MultiOption-Alpha');
+    expect(json).not.toContain('MultiOption-Beta');
+    expect(json).not.toContain('MultiOption-Gamma');
+  });
+
+  it('still fills an ordinary single-select', () => {
+    document.body.innerHTML = FIXTURES.selectPlaceholder;
+    const select = document.getElementById('sp') as HTMLSelectElement;
+    const result = executeFillPlan(plan([instruction('sp', 'Yes', 'sponsorship')]), [
+      { fieldId: 'sp', element: select },
+    ]);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.report.results[0]?.status).toBe('filled');
+    expect(select.selectedOptions.length).toBe(1);
+    expect(select.value).toBe('yes');
   });
 });
 
