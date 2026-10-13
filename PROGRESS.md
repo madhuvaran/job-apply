@@ -1,5 +1,121 @@
 # PROGRESS
 
+## Done (2026-10-13, task 10 / Prompt 06: provider-agnostic AI interface)
+- **`src/lib/ai/schemas.ts`** (new) — zod-validated wire contract (v1), strict
+  (`.strict()`) at EVERY level: `aiRequestSchema` = schemaVersion literal +
+  `task` enum (`tailor-resume` | `draft-answer`) + `aiJobInputSchema` (shared
+  JobPosting caps: title 200, short fields 200, description 100k, non-blank,
+  no extra keys) + embedded `profileSchema` (AI-safe record ONLY) +
+  embedded `providerSafeSettingsSchema` (`settingsSchema.omit({ salary
+  }).strict()`); `aiResponseSchema` = non-blank content (1–50k), provider id,
+  optional `model` + `.strict()` `usage` token counters; `validateAiRequest` /
+  `validateAiResponse` / `formatZodIssues` (path + message, same shape as
+  `validateSettings`). Unknown keys in the request, job, settings, profile,
+  response or usage are all rejected.
+- **`src/lib/ai/errors.ts`** (new) — typed `AiError` union
+  (`invalid-request` / `invalid-response` / `timeout` / `rate-limited` /
+  `http` / `network` / `provider-fault`) + `AI_ERROR_KINDS`. Fixed-literal or
+  path-only strings — never payload content, never credentials (non-PII rule
+  from the storage service).
+- **`src/lib/ai/provider.ts`** (new) — the provider interface: `send(request,
+  ctx)` with `ctx = { signal, attempt, timeoutMs }` returns a typed
+  `AiProviderOutcome` (raw response | `AiProviderFailure`: `rate-limited`
+  (+`retryAfterMs`) / `timeout` / `network` / `http` (+`retryable`) /
+  `malformed`). No credential field exists anywhere in the contract.
+- **`src/lib/ai/run.ts`** (new) — `buildAiRequest()` is THE payload
+  chokepoint: projects settings through `settingsForProvider()` (strips
+  `salary`), embeds only the AI-safe profile, strict-validates the result
+  (a still-present `salary` fails validation instead of being sent).
+  `runAiRequest()` NEVER throws for expected failures; returns
+  `{ kind: 'ok' | 'fallback' | 'error' }` (+`attempts`): (1) typed
+  `invalid-request` before anything runs (attempts 0), (2) `aiEnabled:false`
+  → local fallback with the provider NEVER invoked — zero network requests,
+  (3) per-attempt timeout (default 15 000 ms; `AbortController` aborts the
+  in-flight attempt) + retry loop for rate limits / 5xx / network / timeout
+  with exponential backoff (250 ms base, doubling, capped 30 s), honoring
+  `Retry-After` (capped 120 s), max 3 attempts; non-retryable failures
+  (other 4xx, invalid response, thrown provider → `provider-fault` with the
+  error NAME only, never its message) return on attempt 1. `sleep` is
+  injectable so tests assert exact backoff without waiting.
+- **`src/lib/ai/fallback.ts`** (new) — deterministic no-AI response
+  (`provider: 'local'`): `tailor-resume` renders the candidate's stored
+  profile content verbatim (stored order, capped at 50k, fixed literal for an
+  empty profile); `draft-answer` renders the saved application answers
+  verbatim. Nothing is generated, invented or reworded.
+- **`src/lib/ai/proxy.ts`** (new) — `createProxyProvider({ endpoint })`, the
+  only production transport: JSON POST to the extension's OWN backend.
+  Options are `.strict()` with NO credential field (passing an `apiKey` throws
+  at wiring time — a config bug, not a runtime AI failure). Maps 429 →
+  `rate-limited` (Retry-After delta-seconds OR HTTP-date → ms), 5xx →
+  retryable `http`, other 4xx → non-retryable `http`, fetch `TypeError` →
+  `network`, abort → `timeout`, non-JSON 2xx body → `malformed`. Sends only
+  `content-type`/`accept` headers (no Authorization/x-api-key — by design) and
+  forwards the orchestrator's AbortSignal.
+- **`src/lib/ai/mock.ts`** (new) — `createMockProvider()` for tests: records
+  every call (request, attempt, signal), plays scripted steps (typed failures,
+  arbitrary raw payloads including deliberately invalid ones, `hang`), and
+  defaults to a valid response `mock:<task>:<job title>`. Offline, no I/O.
+- **`src/lib/ai/index.ts`** (new) — public surface re-export.
+- **Tests** (4 new files, 79 tests): `schemas.test.ts` (23) — strict request/
+  response matrix (extra keys rejected at every level incl. inside `usage`),
+  `salary` inside settings rejected, sensitive record and injected contact
+  keys rejected as/inside the profile, size caps (200 / 100k / 50k), helper
+  formatting. `run.test.ts` (30) — chokepoint (serialized request contains no
+  `salary`/amount/currency and no sensitive value; deep-equals
+  `settingsForProvider` output), ZERO-network fallback (mock untouched AND
+  proxy `fetch` spy untouched; scripted failures and retry options never even
+  consulted), fallback content (verbatim + deterministic, answers vs profile
+  render, empty-profile literal, no salary/sensitive strings), invalid-request
+  → attempts 0 with provider untouched, ok path, invalid response not retried,
+  timeouts (aborted signal asserted, retry-then-succeed with backoff 250→500,
+  exhaustion), retry policy (Retry-After honored over backoff, 4xx immediate,
+  `maxAttempts`/clamp behavior, thrown + synchronously-throwing providers →
+  `provider-fault` with no message leak). `proxy.test.ts` (21) — options
+  strictness (no key field; bad endpoint throws), no auth headers, body equals
+  the validated request, 429/Retry-After (seconds + HTTP-date + absent),
+  5xx/4xx mapping, TypeError→network, AbortError→timeout, non-JSON→malformed,
+  end-to-end `runAiRequest` retry through the proxy, zero fetches when
+  `aiEnabled` is false. `mock.test.ts` (5). Suite: **233 tests passing
+  (11 files)**.
+- **`README.md`** — new "AI provider interface (backend-proxy pattern)"
+  section: architecture diagram (extension → own backend → vendor), key
+  custody rules, response contract JSON, CORS note (backend allows the
+  extension origin → **no host permission needed**), timeout/retry semantics;
+  privacy + status paragraphs updated. `wxt.config.ts` untouched.
+
+### Commands run this task (exit statuses captured inline)
+- `npm ci` → exit 0 (node_modules was absent after restore; lockfile preserved)
+- `npx vitest run` → **exit 0, 233/233 passed** (154 baseline + 79 new)
+- `npm run compile` → **exit 0**
+- `npm run build` → **exit 0**; built manifest verified unchanged:
+  `permissions = ["storage", "activeTab", "scripting"]`, no `host_permissions`,
+  no `optional_host_permissions`
+
+### Limitations / known issues
+- Library + tests only: nothing calls `runAiRequest()` yet (Prompt 06 scope).
+  No UI switch and no stored backend endpoint — enabling `aiEnabled` alone
+  changes nothing on the wire until a later prompt wires a feature to it.
+- No real backend exists: `createProxyProvider` is exercised against a fake
+  `fetch` only. No live vendor call, no CORS handshake and no key custody are
+  tested or claimed — the backend must be built before production use, and
+  the manifest gains no host permission (by design; the proxy relies on CORS).
+- Retry delays are verified with an injected `sleep` (exact backoff values,
+  no real waiting); timeout tests use real 10–20 ms timers. Backoff has no
+  jitter.
+- The extension validates only the request/response ENVELOPE; what the
+  backend puts into the vendor prompt and how vendor output is filtered is
+  the backend's responsibility (knowledge.md content rules are documented in
+  README but not enforceable client-side).
+- `.wxt/tsconfig.json` shows as modified after `npm ci` (regenerated by
+  `wxt prepare`); it is generated output and intentionally not committed,
+  matching earlier tasks. `.output/` is build output, also not committed.
+
+### Next
+- Prompt 09+ (match estimate / tailoring) consuming `runAiRequest`, and —
+  when requested — a settings field + options UI for the backend endpoint.
+
+---
+
 ## Done (2026-10-13, task 9 / Prompt 08: user-triggered current-page job capture)
 - **`src/lib/capture.ts`** (new) — provider/page-free capture library: zod message
   schemas on BOTH sides (`captureRequestSchema` strict; `captureResponseSchema`
@@ -126,6 +242,8 @@
 ---
 
 ## NOT implemented (2026-10-13): Prompt 06 — AI provider abstraction
+- RESOLVED in task 10 (see the top entry): `src/lib/ai/` now exists with the
+  full provider abstraction, tests and README docs. Historical note follows.
 - Prompt 06 was requested but superseded mid-task by Prompts 07/08 before any
   of it was implemented. No `src/lib/ai/` code exists. Everything in this
   repo still makes zero network requests; `aiEnabled` in settings is stored
