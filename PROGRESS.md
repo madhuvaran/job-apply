@@ -1,5 +1,121 @@
 # PROGRESS
 
+## Done (2026-10-13, task 13 / Prompt 11: deterministic resume tailoring engine)
+- **`src/lib/resume/schemas.ts`** (new) — strict (`.strict()`) output
+  contract `tailoredResumeSchema` (v1): provenance (`source` = posting
+  id/title/capturedAt ONLY — never the raw description), optional header
+  (displayName/headline/locationLabel), optional summary
+  (`basis: profile-summary | profile-headline | profile-skills` + verbatim/
+  assembled text + `sourceIds`), skills (profile skill id, verbatim name/
+  `status`/`years`/`evidenceRef`, annotation `relevance: required|preferred|
+  neutral` + `matchedJobSkill` link), experience (id/company/title/location/
+  dates/seniority + VERBATIM bullets + `relevance: relevant|fallback` +
+  fixed reason ≤200), projects (id/name/description/links + skills projected
+  as {id,name,status} + relevance/reason), education/certifications/languages
+  (verbatim, always included), optional links, count-only `selectionNotes`.
+  Caps: 24 skills (`SKILL_FILL_TARGET` 12), 12 projects, 12 notes.
+  `validateTailoredResume` returns path+code issues (no values). Every
+  selected item id EQUALS the profile item id → full reviewer traceability;
+  EvidenceRefSchema is REUSED from profile.ts (see below), no competing
+  schema.
+- **`src/lib/resume/relevance.ts`** (new) — documented, tested TIER
+  classifier (not a score — Prompt 09's formula/weights/vocabulary/threshold
+  untouched): `buildJobSignal(job)` collects canonical skill ids per
+  requiredness (`skills[]` + required quals → required; preferred quals →
+  preferred; required wins collisions; non-vocabulary posting skills absent,
+  never guessed) + posting title tokens + `hasSignal`;
+  `skillTier(signal, profileSkillName)` → required|preferred|neutral;
+  `entryRelevance(signal, title, texts)` → overlap classification with FIXED,
+  non-quoting reasons (required-skill mention / title overlap / preferred
+  mention / no-overlap / no-signal).
+- **`src/lib/resume/tailor.ts`** (new) — `tailorResume(profile, job)` typed
+  result: `ok` (strict payload) | `insufficient` (fixed literal reason —
+  nothing renderable, nothing fabricated) | `invalid` (missing input
+  markers / schema issues, path+CODE only, never profile/job text). NO
+  throws for expected user-data failures. Selection policy (documented in
+  the module header): skills ranked required→preferred→neutral-fill-to-12
+  (cap 24, duplicate canonicals keep first occurrence, profile iteration
+  ONLY so posting skills absent from the profile are never added, claimed
+  stays claimed); experience keeps SOURCE (chronological) order — relevance
+  decides inclusion only (overlap → keep overlapping; signal-with-zero-
+  overlap → keep whole history unchanged; no signal → everything as-is);
+  projects overlap-filtered with omission (never fabrication) when a
+  signaling posting matches nothing; education/certifications/languages
+  always verbatim (dropping credentials could misrepresent); summary =
+  profile.summary verbatim → else headline → else "Skills: …" from selected
+  names → else OMITTED. Output passes `tailoredResumeSchema.parse` as an
+  invariant. Offline: no AI (`runAiRequest` never imported), no network, no
+  storage reads/writes, no clock, no settings input at all, no sensitive
+  profile path.
+- **`src/lib/resume/index.ts`** (new) — public surface re-export.
+- **`src/lib/profile.ts`** — smallest possible reuse change: `EvidenceRefSchema`
+  is now `export`ed (same pattern as sharing `ExperienceRangeSchema` from
+  settings in Prompt 07). No schema shape change.
+- **Tests** (2 new files, 37 tests; suite **351 passing (17 files)**):
+  `resume/relevance.test.ts` (10) — required/preferred split incl.
+  required-wins collision, unrecognized posting skills never guessed,
+  empty-posting no-signal, alias tiering (k8s → preferred kubernetes),
+  entry relevance reasons (incl. reason never quoting entry text), no-signal
+  conservative inclusion, AND a pin that `MATCH_WEIGHTS` are still
+  35/10/20/20/15. `resume/tailor.test.ts` (27) — required skills ranked
+  ahead of a profile-first preferred skill (source order kept within tier;
+  `matchedJobSkill` links only); Kubernetes (in posting, not profile)
+  never added; claimed stays claimed with no invented evidence; duplicate
+  canonical dedupe; experience/project selection verbatim with ids, bullets
+  and dates deep-equal to the profile; no-signal keeps full history in
+  order; signal-with-zero-overlap keeps history (reason "included
+  unchanged"); relevance filter drops the unrelated entry/project; "no
+  invented content" sweep (all bullets ∈ profile, summary === profile
+  summary, no metric-style fabrication patterns); education/certs/languages
+  always present; header/links verbatim and NO '@'/'555-0100'; empty
+  posting → all-neutral skills + fallback history + provenance intact;
+  invalid profile/job → typed issues without leaking 'Fake'/'Berlin'/
+  'Engineer' text; null inputs → explicit missing markers; empty and
+  header-only profiles → `insufficient` (never fabricated); byte-identical
+  repeated runs; strict schema rejects injected `apiKey`/`contact`/extra
+  bullet/skill keys; API arity is exactly (profile, job); sensitive sample
+  values, compensation ('999,999') and the raw description text absent from
+  output; fetch spy proves zero network calls; a source scan proves the
+  module imports no sensitive store, AI layer, fetch, or storage; matching
+  public API + weights unchanged. Prompt 09's matching files were NOT
+  modified (`git diff --name-only` verified).
+- **`README.md`** — new "Resume tailoring (deterministic, no AI — no PDF
+  yet)" section documenting selection rules, truthfulness guarantees and the
+  explicit absence of PDF rendering; roadmap updated.
+
+### Commands run this task (exit statuses captured inline)
+- `npx vitest run` → **exit 0, 351/351 passed** (314 baseline + 37 new)
+- `npm run compile` → **exit 0**
+- `npm run build` → **exit 0**; built manifest unchanged:
+  `permissions = ["storage", "activeTab", "scripting"]`, no `host_permissions`
+- Pre-commit inspection: `git status`/`git diff` clean of secrets, `.env`,
+  `node_modules`, build artifacts (`.wxt/tsconfig.json` regeneration left
+  uncommitted as in every prior task); no manifest/config files in the diff.
+
+### Limitations / known issues
+- **No PDF rendering** (explicitly out of scope) and no options UI yet —
+  the engine is a library awaiting a renderer + consumer prompt.
+- Bullet-level subsetting is NOT implemented: a selected experience entry
+  keeps ALL its bullets verbatim (conservative; avoids hiding facts). Skill
+  neutral-fill target (12) and caps (24/12) are documented heuristics, not
+  user-configurable.
+- Relevance is vocabulary-scoped (same ~50-skill vocabulary as Prompt 09):
+  postings naming unrecognized skills get title-only/no signal; entries
+  whose bullets avoid vocabulary words rely on title overlap or the
+  documented fallbacks.
+- Summary assembly from `profile-skills` (no summary/headline) is a labeled
+  list of verbatim skill names — it is not prose and never adds claims.
+- Determinism excludes nothing time-based (posting `capturedAt` is provenance
+  only); no live-browser/e2e verification (unit level, as with the rest of
+  the lib layer).
+
+### Next
+- A fixed-layout PDF renderer + Options UI consuming `tailorResume` (the
+  presentation layer handles contact details per the existing privacy rules),
+  after this engine is reviewed.
+
+---
+
 ## Done (2026-10-13, task 12 / Prompt 10: match summary UI in Options → Jobs)
 - **`src/lib/matching/presenter.ts`** (new) — pure view-model layer between
   the matcher and React: `buildMatchSummaryView(outcome)` /

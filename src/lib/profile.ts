@@ -39,8 +39,12 @@ const isoDateSchema = z
 
 const urlSchema = z.url().max(2048);
 
-/** Where an item's evidence comes from (used by skills and generated claims). */
-const EvidenceRefSchema = z
+/**
+ * Where an item's evidence comes from (used by skills and generated claims).
+ * Exported (Prompt 11) so the resume-tailoring result can carry the SAME
+ * reference shape instead of duplicating a competing schema.
+ */
+export const EvidenceRefSchema = z
   .object({
     /** e.g. "experience", "education", "certification", "project", "profile". */
     kind: z.enum(['experience', 'education', 'certification', 'project', 'profile', 'document', 'answer']),

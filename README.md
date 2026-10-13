@@ -177,6 +177,33 @@ skill mentioned only in raw prose never becomes a requirement). With
 threshold is evaluated separately and insufficient data never counts as a
 pass.
 
+## Resume tailoring (deterministic, no AI — no PDF yet)
+
+`src/lib/resume/tailor.ts` exposes `tailorResume(profile, job)` which selects
+and reorders **existing** AI-safe profile content for one saved posting and
+returns a strictly validated `tailoredResumeSchema` payload. It is offline
+and deterministic: no network, no AI calls, no settings/storage reads, and
+the sensitive profile is never loaded — contact details are out of scope here
+and belong to the later rendering layer.
+
+Truthfulness rules (unit-tested): every rendered fact traces to a profile
+item id (skills/experience/projects/education/certifications/languages are
+verbatim copies; bullets and dates are never rewritten); posting skills that
+are absent from the profile are never added; a `claimed` skill stays
+`claimed`; no metrics or achievements are ever generated. Skills are ranked
+by posting relevance (required matches first, then preferred, then profile
+order up to a documented fill target); experience keeps its source
+(chronological) order with relevance deciding inclusion only; education,
+certifications and languages are always included verbatim. Summary uses the
+profile's own summary/headline (or a line assembled from selected skill
+names) and is omitted when nothing supported exists — empty input yields an
+explicit `insufficient` result instead of fabricated content, and invalid
+input yields a typed `invalid` result (field paths only, no profile text).
+
+**PDF rendering is NOT implemented yet** — this task produced the content
+model only, for a later fixed-layout renderer. Nothing here claims an ATS
+will pass the result.
+
 ## Permissions
 
 `storage` (validated local data), `activeTab` (current tab only, granted when you
@@ -201,6 +228,8 @@ Phased plan lives in `PROGRESS.md`. Done so far: profile + evidence schema,
 validated storage service, profile editor, settings & privacy model, job-posting
 model with manual intake, user-triggered current-page capture, the
 provider-agnostic AI interface (Prompt 06), the deterministic job match
-estimate (Prompt 09 — library + tests; formula above), and its match summary
-UI in Options → Jobs (Prompt 10). **Not yet built: resume tailoring and any
-wiring of the AI interface into features.**
+estimate (Prompt 09 — library + tests; formula above), its match summary UI
+in Options → Jobs (Prompt 10), and the deterministic resume tailoring engine
+(Prompt 11 — content model only). **Not yet built: PDF rendering for the
+tailored content, its options UI, and any wiring of the AI interface into
+features.**
