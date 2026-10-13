@@ -252,3 +252,24 @@ select { max-width: 220px; }
 .resume-export { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
 .resume-export .hint { margin: 0; }
 .resume-export .banner { margin: 0; width: 100%; }
+
+/* Application log (Prompt 13). */
+.application-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.application-item {
+  border: 1px solid #eef0f4; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px;
+}
+.application-item[data-orphaned='true'] { border-color: #fde68a; background: #fffbeb; }
+.application-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.application-head > div { display: flex; flex-direction: column; }
+.application-title { font-size: 1rem; }
+.application-orphan-note { color: #92400e; font-style: italic; }
+.application-status { display: flex; flex-direction: column; gap: 2px; }
+.application-dates { display: flex; flex-wrap: wrap; gap: 12px; margin: 6px 0 0; }
+.application-notes {
+  white-space: pre-wrap; background: #f9fafb; border-radius: 6px; padding: 6px 8px; margin: 8px 0 0;
+  font-size: 0.9rem;
+}
+.application-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.application-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.application-confirm .hint { margin: 0; }
+.application-edit { border-top: 1px solid #eef0f4; margin-top: 12px; padding-top: 8px; }

@@ -56,6 +56,11 @@ import {
   type JobPosting,
   type JobPostingsRecord,
 } from './job-posting';
+import {
+  applicationsRecordSchema,
+  emptyApplicationsRecord,
+  type ApplicationsRecord,
+} from './applications/schemas';
 import { z } from 'zod';
 
 const KEY_V2 = 'job-profile.v2';
@@ -66,6 +71,8 @@ export const KEY_LEGACY = 'job-profile';
 const KEY_SETTINGS = 'job-settings.v1';
 /** Saved job postings (manual intake + capture) — schema v1 in src/lib/job-posting.ts. */
 const KEY_JOB_POSTINGS = 'job-postings.v1';
+/** Local application log — schema v1 in src/lib/applications/schemas.ts. Local-only, never synced. */
+const KEY_APPLICATIONS = 'job-applications.v1';
 
 export const STORAGE_KEYS = {
   profile: KEY_V2,
@@ -73,6 +80,7 @@ export const STORAGE_KEYS = {
   legacy: KEY_LEGACY,
   settings: KEY_SETTINGS,
   jobPostings: KEY_JOB_POSTINGS,
+  applications: KEY_APPLICATIONS,
 } as const;
 
 /* ------------------------------------------------------------------ */
@@ -368,6 +376,25 @@ export async function upsertJobPosting(
 /** Explicit-only reset: replace the postings list with an empty valid record. */
 export async function resetJobPostings(): Promise<StorageResult<JobPostingsRecord> | null> {
   return saveJobPostings(emptyJobPostingsRecord());
+}
+
+/* ------------------------------------------------------------------ */
+/* Application log (v1) — local-only                                    */
+/* ------------------------------------------------------------------ */
+
+export async function loadApplications(): Promise<StorageResult<ApplicationsRecord>> {
+  return loadValidated(STORAGE_KEYS.applications, applicationsRecordSchema);
+}
+
+export async function saveApplications(
+  record: ApplicationsRecord,
+): Promise<StorageResult<ApplicationsRecord> | null> {
+  return writeValidated(STORAGE_KEYS.applications, applicationsRecordSchema, record);
+}
+
+/** Explicit-only reset: replace the application log with an empty valid record. */
+export async function resetApplications(): Promise<StorageResult<ApplicationsRecord> | null> {
+  return saveApplications(emptyApplicationsRecord());
 }
 
 /* ------------------------------------------------------------------ */

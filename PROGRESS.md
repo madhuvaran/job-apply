@@ -1,5 +1,109 @@
 # PROGRESS
 
+## Done (2026-10-13, task 15 / Prompt 13: local application log)
+- **`src/lib/applications/schemas.ts`** (new) — strict (`.strict()`) model:
+  `applicationSchema` { generated `id`, `jobId`, `status`, optional
+  `applicationDate`/`followUpDate` (real `YYYY-MM-DD` calendar dates — regex +
+  `isRealCalendarDate` rejects 2026-02-31/month 13), optional `notes`
+  (trimmed, capped at `MAX_NOTES_CHARS` 4000; blank normalised to absent),
+  `createdAt`/`updatedAt` ISO datetimes }, fixed `APPLICATION_STATUSES`
+  (planned/applied/assessment/interview/offer/rejected/withdrawn) + labels,
+  `applicationsRecordSchema` (max 1000), `emptyApplicationsRecord`,
+  `createApplication`/`applyApplicationPatch` (injected `now`/`id` →
+  deterministic; identity fields preserved, `updatedAt` bumped), pure list
+  helpers (`upsertApplicationInList`, `removeApplicationFromList`,
+  `findApplicationForJob`), `validateApplicationInput`/`formatZodIssues`
+  (path+message only). NO salary/contact/credential fields exist.
+- **`src/lib/storage.ts`** (minimal extension) — `STORAGE_KEYS.applications`
+  = `job-applications.v1` with `loadApplications`/`saveApplications`/
+  `resetApplications`, reusing the existing `loadValidated`/`writeValidated`
+  service (absent/malformed+raw/unavailable/quota distinctions, never
+  overwriting corrupt data). No other storage behaviour changed.
+- **`src/lib/applications/service.ts`** (new) — domain rules over the storage
+  abstraction, all returning the existing typed-result convention
+  (`{ ok } | { ok:false, reason, message }` with reasons absent/malformed/
+  unavailable/quota/job-missing/not-found/invalid; `raw` only for malformed):
+  `listApplications` (absent → empty list), `createApplicationForJob`
+  (validates fields, verifies the referenced job exists via `loadJobPostings`,
+  allows deliberate repeats), `startTrackingApplication` (one-click flow reuses
+  an existing application for the same job → `alreadyTracked: true`, no
+  duplicate), `updateApplication`, `deleteApplication`. Every mutation loads
+  first and aborts on malformed/unavailable storage (never overwrites);
+  messages are fixed and never contain notes/job text. No AI, no network, no
+  sensitive profile.
+- **`src/lib/applications/presenter.ts`** (new) — pure view-model:
+  `buildApplicationRows` (resolves title/employer/URL, flags orphaned
+  references with `ORPHANED_JOB_LABEL`, never invents a title),
+  `selectApplicationRows` (status filter + deterministic sort by updated /
+  applicationDate (missing last) / created, tie-break by `id`),
+  `APPLICATION_*` option lists.
+- **`src/lib/applications/index.ts`** (new) — public surface (schemas +
+  service + presenter) so the UI never touches `chrome.storage` directly.
+- **`entrypoints/options/ApplicationList.tsx`** (new) — presentational list
+  (pure props, `react-dom/server`-testable). The destructive delete control is
+  wired ONLY when `confirmingDeleteId === row.id`, so a delete always requires
+  an explicit confirmation; shows status select, application/follow-up dates,
+  notes, employer, optional posting URL, Edit/Delete.
+- **`entrypoints/options/ApplicationsPanel.tsx`** (new) — Options →
+  **Applications** tab: track a new application (job select + optional date +
+  notes), status change, edit notes/dates, two-step delete, filter/sort,
+  Refresh; explicit "Replace with empty list" recovery for malformed storage;
+  loading/empty/orphaned/storage-error states with safe fixed messages.
+- **`entrypoints/options/App.tsx`** — new `applications` tab; **`JobsPanel.tsx`**
+  — a *Track application* action per saved job (one-click, duplicate-safe);
+  **`style.css`** — application-log styles.
+- **Tests** (4 new files, +52 tests; suite **452 passing (26 files)**):
+  `schemas.test.ts` (11) — defaults, all statuses + invalid status rejection,
+  strict rejection of `salary`/`email`, malformed/impossible dates, notes cap +
+  blank normalisation, patch identity preservation + null clears, list helpers,
+  record/validation helpers. `service.test.ts` (22) — absent → empty list;
+  malformed with recoverable raw and **never overwritten** on create/update/
+  delete; unavailable + quota write failures (existing records preserved);
+  job-missing rejection without writing; deliberate repeat allowed;
+  one-click duplicate-safe reuse; status/notes persistence with bumped
+  `updatedAt`; not-found; orphan keeps history (still editable/deletable);
+  messages never leak notes or job title; zero network; source scan proving no
+  sensitive/AI/fetch/direct-storage imports. `presenter.test.ts` (7) — row
+  resolution, orphan flag, status filter, deterministic 3-key sorts
+  (missing-last, id tie-break) and order-independence. `ui.test.ts` (7) —
+  rendered title/employer/notes/dates/all statuses, orphaned label,
+  **delete-confirmation gate** (no destructive confirm until
+  `confirmingDeleteId` set), empty state, HTML-escaping of notes, no network.
+  `storage.test.ts` (+5 regression) — absent/round-trip/malformed-raw/
+  unavailable/quota/reset for the new key, and a check that only the local
+  application key is written.
+- **`README.md`** — new "Application log (local-only)" section documenting the
+  storage key, record fields, status table, explicit-only behavior, duplicate
+  and orphan policy, and filter/sort; roadmap updated.
+
+### Commands run this task (exit statuses captured inline)
+- `npx vitest run` → **exit 0, 452/452 passed** (400 baseline + 52 new)
+- `npm run compile` → **exit 0**
+- `npm run build` → **exit 0**; built manifest unchanged:
+  `permissions = ["storage", "activeTab", "scripting"]`, no `host_permissions`
+- Pre-commit inspection: no secrets, `.env`, `node_modules` or build artifacts
+  staged (`.wxt/tsconfig.json` ephemeral regeneration left uncommitted as in
+  every prior task; `.output/` untracked); matching (Prompt 09), tailoring
+  (Prompt 11) and PDF (Prompt 12) source files were NOT modified.
+
+### Limitations / known issues
+- No reminder notifications, analytics, sync or job-alert features (explicitly
+  out of scope); follow-up dates are stored/displayed only.
+- Filtering is by single status (no multi-select) and sorting offers three fixed
+  keys — deliberately modest and dependency-free.
+- The application list is loaded once per panel mount (plus explicit Refresh);
+  external edits made in another tab appear on Refresh, not live.
+- Duplicate protection covers the one-click Jobs action; the explicit
+  form intentionally allows repeat applications for the same job.
+- UI is verified with `react-dom/server` presentational tests + pure
+  presenter/service tests (no browser e2e in this environment).
+
+### Next
+- Wire the AI interface into a user-visible feature and/or application form
+  autofill (roadmap), keeping the application log local-only.
+
+---
+
 ## Done (2026-10-13, task 14 / Prompt 12: fixed-layout ATS-friendly resume PDF)
 - **`pdf-lib@^1.17.1`** (new runtime dependency, lockfile committed) — MIT,
   pure-JS, browser-only PDF writer: no network at runtime, no native code, no

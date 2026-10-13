@@ -33,6 +33,7 @@ import { sampleProfile } from '../../src/lib/sample-profile';
 import type { Profile } from '../../src/lib/profile';
 import SettingsPanel from './SettingsPanel';
 import JobsPanel from './JobsPanel';
+import ApplicationsPanel from './ApplicationsPanel';
 import { Row, Section } from './ui';
 import './style.css';
 
@@ -42,7 +43,7 @@ type SaveState =
   | { kind: 'saved'; at: string }
   | { kind: 'error'; message: string };
 
-type Tab = 'profile' | 'settings' | 'jobs';
+type Tab = 'profile' | 'settings' | 'jobs' | 'applications';
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('profile');
@@ -144,7 +145,13 @@ export default function App() {
     <div className="options-page">
       <header className="options-header">
         <h1>
-          {tab === 'profile' ? 'Master profile' : tab === 'settings' ? 'Settings & privacy' : 'Jobs'}
+          {tab === 'profile'
+            ? 'Master profile'
+            : tab === 'settings'
+              ? 'Settings & privacy'
+              : tab === 'jobs'
+                ? 'Jobs'
+                : 'Applications'}
         </h1>
         <nav className="tabs" aria-label="Options sections">
           <button
@@ -171,12 +178,22 @@ export default function App() {
           >
             Jobs
           </button>
+          <button
+            type="button"
+            className={tab === 'applications' ? 'tab active' : 'tab'}
+            aria-current={tab === 'applications' ? 'page' : undefined}
+            onClick={() => setTab('applications')}
+          >
+            Applications
+          </button>
         </nav>
         {tab === 'profile' && <SaveStatus state={saveState} dirty={dirty} />}
       </header>
 
       {tab === 'jobs' ? (
         <JobsPanel />
+      ) : tab === 'applications' ? (
+        <ApplicationsPanel />
       ) : tab === 'settings' ? (
         <SettingsPanel />
       ) : (

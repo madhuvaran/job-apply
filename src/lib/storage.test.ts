@@ -10,6 +10,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   getLegacyProfile,
+  loadApplications,
   loadJobPostings,
   loadProfile,
   loadSensitiveProfile,
@@ -17,10 +18,12 @@ import {
   mapLegacyToProfile,
   migrateLegacyProfile,
   migrateSettingsFromProfile,
+  resetApplications,
   resetJobPostings,
   resetProfile,
   resetSensitiveProfile,
   resetSettings,
+  saveApplications,
   saveJobPostings,
   saveProfile,
   saveSensitiveProfile,
@@ -33,6 +36,7 @@ import { defaultSettings, type Settings } from './settings';
 import { createJobPosting, type JobPosting } from './job-posting';
 import { sampleProfile, sampleSensitiveProfile } from './sample-profile';
 import type { LegacyProfileV1 } from './legacy';
+import { emptyApplicationsRecord } from './applications/schemas';
 
 type StorageApi = {
   get: (keys: string | string[]) => Promise<Record<string, unknown>>;
@@ -613,5 +617,53 @@ describe('migrateSettingsFromProfile (seed, non-destructive)', () => {
     const first = await loadSettings();
     expect((await migrateSettingsFromProfile()).migrated).toBe('already_present');
     expect(await loadSettings()).toEqual(first);
+  });
+});
+
+describe('applications (v1) storage', () => {
+  it('returns absent for the application key when nothing is stored', async () => {
+    const res = await loadApplications();
+    expect(res).toMatchObject({ ok: false, reason: 'absent' });
+    expect(res).not.toHaveProperty('raw');
+  });
+
+  it('round-trips a valid application record (local key only)', async () => {
+    const record = emptyApplicationsRecord();
+    expect(await saveApplications(record)).toBeNull();
+    expect(await loadApplications()).toEqual({ ok: true, data: record });
+    expect(h.backing.has(STORAGE_KEYS.applications)).toBe(true);
+    // Nothing is written to sync or any other key.
+    expect([...h.backing.keys()]).toEqual([STORAGE_KEYS.applications]);
+  });
+
+  it('returns malformed with recoverable raw and never overwrites it', async () => {
+    const corrupt = { schemaVersion: '1', applications: [{ id: 'x', notes: 'secret' }] };
+    h.backing.set(STORAGE_KEYS.applications, corrupt);
+    const res = await loadApplications();
+    expect(res).toMatchObject({ ok: false, reason: 'malformed' });
+    if (!res.ok) {
+      expect(res.raw).toEqual(corrupt);
+      expect(res.message).not.toMatch(/secret/);
+    }
+    expect(h.backing.get(STORAGE_KEYS.applications)).toEqual(corrupt);
+  });
+
+  it('surfaces unavailable storage and quota write failures', async () => {
+    h.failure.getType = 'get';
+    expect(await loadApplications()).toMatchObject({ ok: false, reason: 'unavailable' });
+
+    h.failure.getType = 'none';
+    h.backing.set(STORAGE_KEYS.applications, emptyApplicationsRecord());
+    h.failure.getType = 'setOnly';
+    h.failure.errorName = 'QuotaExceededError';
+    const write = await saveApplications(emptyApplicationsRecord());
+    expect(write).toMatchObject({ ok: false, reason: 'quota' });
+  });
+
+  it('resetApplications replaces the log with an empty valid record (explicit only)', async () => {
+    const seeded = { schemaVersion: '1', applications: [] };
+    h.backing.set(STORAGE_KEYS.applications, seeded);
+    expect(await resetApplications()).toBeNull();
+    expect(await loadApplications()).toEqual({ ok: true, data: emptyApplicationsRecord() });
   });
 });

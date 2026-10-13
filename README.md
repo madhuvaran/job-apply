@@ -232,6 +232,52 @@ scripts are refused rather than transliterated; there is no in-page PDF
 bundled custom fonts. Nothing claims the PDF will pass a specific employer's
 ATS.
 
+## Application log (local-only, no external service)
+
+The **Applications** tab in Options tracks applications against your saved job
+postings. It is entirely local: records live in `chrome.storage.local` under the
+versioned key `job-applications.v1` (never sync storage), no network request is
+made, the AI provider is never used, and the separate sensitive profile is never
+read.
+
+Each application record (`src/lib/applications/`) stores only: a generated
+`id`, the referenced saved `jobId`, a `status`, optional `applicationDate`, an
+optional `followUpDate`, optional user notes, and `createdAt`/`updatedAt`
+timestamps. Records are `.strict()`-validated — no salary, contact details,
+credentials or legal answers can be stored. Dates must be real calendar dates
+(`YYYY-MM-DD`; impossible dates such as `2026-02-31` are rejected) and notes are
+length-capped.
+
+**Status values** (fixed, documented):
+
+| Value | Label |
+|---|---|
+| `planned` | Planned |
+| `applied` | Applied |
+| `assessment` | Assessment |
+| `interview` | Interview |
+| `offer` | Offer |
+| `rejected` | Rejected |
+| `withdrawn` | Withdrawn |
+
+Behavior:
+- **Explicit only** — nothing is auto-marked "applied" by viewing a job,
+  generating a resume, or autofilling. You change the status yourself.
+- **Create** requires a saved job (the reference is validated before writing);
+  **edit** changes status, notes and dates; **delete** uses a two-step
+  confirmation.
+- **No accidental duplicates** — the one-click *Track application* action in
+  the Jobs tab reuses an existing application for the same job; the explicit
+  *Add application* form still lets you record a deliberate repeat application.
+- **Orphaned references are safe** — if you later delete a saved job posting,
+  its application history is kept and shown as "Job posting no longer saved";
+  nothing is silently discarded.
+- **Integrity** — malformed storage is surfaced (with a recoverable raw value)
+  and never overwritten; create/update/delete all refuse to write while the log
+  is malformed. Absent, malformed, unavailable and quota states are distinguished.
+- **Filter & sort** — filter by status and sort by last updated, application
+  date (missing last) or date created; ordering is deterministic.
+
 ## Permissions
 
 `storage` (validated local data), `activeTab` (current tab only, granted when you
@@ -258,6 +304,7 @@ model with manual intake, user-triggered current-page capture, the
 provider-agnostic AI interface (Prompt 06), the deterministic job match
 estimate (Prompt 09 — library + tests; formula above), its match summary UI
 in Options → Jobs (Prompt 10), the deterministic resume tailoring engine
-(Prompt 11), and the fixed-layout ATS-friendly resume PDF export + Options →
-Jobs download action (Prompt 12). **Not yet built: wiring the AI interface
-into features, application form autofill, and application logging.**
+(Prompt 11), the fixed-layout ATS-friendly resume PDF export + Options → Jobs
+download action (Prompt 12), and the local application log + Options →
+Applications tab (Prompt 13). **Not yet built: wiring the AI interface into
+features and application form autofill.**

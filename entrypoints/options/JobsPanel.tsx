@@ -43,6 +43,7 @@ import type { Profile } from '../../src/lib/profile';
 import { Row, Section } from './ui';
 import MatchSummary from './MatchSummary';
 import ResumeExport from './ResumeExport';
+import { startTrackingApplication } from '../../src/lib/applications';
 
 interface FormState {
   title: string;
@@ -257,6 +258,24 @@ export default function JobsPanel() {
     }
   }, [editingId, form, postings, refresh]);
 
+  // Start tracking an application for a saved job (Prompt 13). Reuses an
+  // existing application for the same job (no accidental duplicates); the
+  // explicit log form still allows deliberate repeat applications.
+  const onTrackApplication = useCallback(async (jobId: string) => {
+    setErrors([]);
+    setNotice(null);
+    const outcome = await startTrackingApplication(jobId);
+    if (!outcome.ok) {
+      setErrors([outcome.message]);
+      return;
+    }
+    setNotice(
+      outcome.data.alreadyTracked
+        ? 'Already tracking this job — open the Applications tab to update it.'
+        : 'Tracking this job as "Planned" — open the Applications tab to update it.',
+    );
+  }, []);
+
   const onResetConfirmed = useCallback(async () => {
     setConfirmingReset(false);
     const res = await resetJobPostings();
@@ -342,6 +361,9 @@ export default function JobsPanel() {
                     onClick={() => setSelectedId((current) => (current === p.id ? null : p.id))}
                   >
                     {selectedId === p.id ? 'Hide match' : 'Estimate match'}
+                  </button>
+                  <button type="button" onClick={() => void onTrackApplication(p.id)}>
+                    Track application
                   </button>
                   <button type="button" onClick={() => startEdit(p)}>Edit</button>
                 </div>
