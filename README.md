@@ -388,7 +388,7 @@ during scanning or page load.
 
 **Integration blocker (documented):** this build configures no backend AI
 endpoint anywhere (Settings has no endpoint field, and adding one is out of
-scope here), so `resolveMappingProvider()` is `null` and the AI action reports
+scope here), so the popup's `MAPPING_PROVIDER` is `null` and the AI action reports
 that mapping is unavailable while every field stays manual. The validated
 proposal library, planner integration and tests are complete; wiring the popup
 to a real provider is deferred until an endpoint is configured. Verified through
