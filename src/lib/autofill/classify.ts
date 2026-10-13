@@ -16,6 +16,10 @@
  * 4. Generic labels ("Name", "Other", "Details", "Additional information", …)
  *    are ambiguous unless a strong signal disambiguates them.
  * 5. Multiple matches → ambiguous; no match → unsupported. Never a guess.
+ * 6. Custom ARIA combobox/listbox widgets (explicit `role="combobox"`/`listbox`
+ *    or `aria-haspopup` listbox/tree/grid) are left for MANUAL entry: the
+ *    deterministic engine cannot open a popup or pick an option without
+ *    clicking arbitrary page elements. A NATIVE `<select>` is unaffected.
  */
 import type { FieldCategory, FieldClassification, FieldDescriptor } from './schemas';
 
@@ -133,6 +137,23 @@ const WORK_AUTH =
 const SPONSORSHIP = /\bsponsor/;
 const SPONSORSHIP_NEGATED = /\bwithout spons|\bno spons|\bnot require spons/;
 
+/**
+ * `aria-haspopup` values that indicate an option-selection widget (a listbox
+ * popup). `true`/`menu` are excluded — those are menus, not form pickers.
+ */
+const CUSTOM_SELECTION_POPUPS = new Set(['listbox', 'tree', 'grid']);
+
+/**
+ * An explicit ARIA combobox/listbox selection widget. Native `<select>` and
+ * plain text/textarea/radio/checkbox controls are NOT affected.
+ */
+function isCustomSelectionWidget(descriptor: FieldDescriptor): boolean {
+  if (descriptor.kind === 'select') return false;
+  const role = (descriptor.role ?? '').toLowerCase();
+  if (role === 'combobox' || role === 'listbox') return true;
+  return CUSTOM_SELECTION_POPUPS.has((descriptor.ariaHasPopup ?? '').toLowerCase());
+}
+
 /** Choice-kind fields only support these categories. */
 const CHOICE_CATEGORIES = new Set<FieldCategory>(['state', 'country', 'workAuthorization', 'sponsorship']);
 
@@ -208,6 +229,12 @@ export function classifyField(descriptor: FieldDescriptor): FieldClassification 
   // Non-form / deliberately unsupported controls.
   if (type === 'search' || type === 'submit' || type === 'button' || type === 'file' || type === 'image' || type === 'reset') {
     return { kind: 'unsupported', reason: 'This control type is not autofilled.' };
+  }
+  if (isCustomSelectionWidget(descriptor)) {
+    return {
+      kind: 'ambiguous',
+      reason: 'Custom combobox/listbox — open the picker and choose it manually.',
+    };
   }
   if (SPONSORSHIP.test(corpus) && SPONSORSHIP_NEGATED.test(corpus)) {
     return { kind: 'ambiguous', reason: 'Sponsorship wording is ambiguous — left for manual entry.' };

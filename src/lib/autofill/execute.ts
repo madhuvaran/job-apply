@@ -6,7 +6,8 @@
  * - The plan is re-validated against `fillPlanSchema`; an invalid plan executes
  *   nothing (`{ ok:false, reason:'invalid-plan' }`).
  * - Only fields listed in the plan are touched; no other element is read or
- *   written, and the field's current value is never inspected for reporting.
+ *   written. A field's current value is never included in any message or
+ *   report; it is read only to restore the control after a failed verification.
  * - Never submits a form, never clicks Apply/Continue/Next, never accepts a
  *   declaration, never navigates, and never touches `form.submit()` /
  *   `requestSubmit()` / `.click()` on buttons.
@@ -19,8 +20,10 @@
  *   controlled inputs observe the change — it uses no React internals and is
  *   not an attempt to bypass framework validation.
  * - Every write is VERIFIED against the intended state before success is
- *   reported; a write that did not take effect yields `verify-failed` and no
- *   spurious events.
+ *   reported; a write that did not take effect (or that leaves the control
+ *   failing the browser's constraint validation, e.g. a `pattern` our saved
+ *   value does not satisfy) yields `verify-failed` and no spurious events.
+ *   Inline "this field is invalid" messages are not parsed.
  * - Select options must match unambiguously AND must not be a placeholder
  *   ("Select one", an empty value, a disabled/hidden option, …); the first
  *   option is never chosen just because it exists.
@@ -190,13 +193,30 @@ function matchesValue(element: Element, plannedValue: string): boolean {
   return own === target || label === target;
 }
 
+/**
+ * Browser constraint validation as an extra post-fill check. A control the page
+ * still considers invalid (unsatisfied `pattern`, invalid `type` value, …) is
+ * reported `verify-failed` instead of as completed. This reads only the
+ * browser's validity state — never the value.
+ */
+function isConstraintValid(element: Element): boolean {
+  const validity = (element as { validity?: { valid?: boolean } }).validity;
+  if (validity === undefined || typeof validity.valid !== 'boolean') return true;
+  return validity.valid === true;
+}
+
 function fillTextLike(element: Element, plannedValue: string): FillStatus {
   if (!(element instanceof HTMLTextAreaElement) && !(element instanceof HTMLInputElement)) {
     return 'unsupported-element';
   }
+  const previous = element.value;
   setNativeValue(element, plannedValue);
-  // Verify BEFORE dispatching: a failed write must not emit change events.
-  if (element.value !== plannedValue) return 'verify-failed';
+  // Verify BEFORE dispatching: a failed write must not emit change events, and
+  // the control is restored so it is genuinely left as it was.
+  if (element.value !== plannedValue || !isConstraintValid(element)) {
+    setNativeValue(element, previous);
+    return 'verify-failed';
+  }
   dispatchValueEvents(element);
   return 'filled';
 }
@@ -214,9 +234,13 @@ function fillSelect(element: Element, plannedValue: string): FillStatus {
   );
   if (matches.length !== 1) return 'no-match';
   const option = matches[0] as HTMLOptionElement;
+  const previous = element.value;
   setNativeValue(element, option.value);
   const selected = element.selectedIndex >= 0 ? element.options[element.selectedIndex] : undefined;
-  if (element.value !== option.value || selected !== option) return 'verify-failed';
+  if (element.value !== option.value || selected !== option || !isConstraintValid(element)) {
+    setNativeValue(element, previous);
+    return 'verify-failed';
+  }
   dispatchValueEvents(element);
   return 'filled';
 }

@@ -74,6 +74,10 @@ export const fieldDescriptorSchema = z
     elementId: z.string().max(200).optional(),
     autocomplete: z.string().max(200).optional(),
     placeholder: z.string().max(300).optional(),
+    /** Explicit ARIA `role` attribute (used to spot custom widgets, e.g. combobox). */
+    role: z.string().max(60).optional(),
+    /** Explicit `aria-haspopup` value (listbox/tree/grid indicate a selection widget). */
+    ariaHasPopup: z.string().max(60).optional(),
   })
   .strict();
 export type FieldDescriptor = z.infer<typeof fieldDescriptorSchema>;

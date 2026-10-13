@@ -342,13 +342,26 @@ a plan can only be applied to the scan that produced it — after the form chang
 you must scan and confirm again. Disabled, read-only, hidden, `inert` and
 disconnected fields are skipped.
 
+**Custom widgets & validation:** a custom ARIA combobox/listbox
+(`role="combobox"`, or `aria-haspopup="listbox|tree|grid"`) is left for **manual
+entry** — the engine will not click popup options; native `<select>` controls are
+unaffected. After a write the executor also checks the browser's constraint
+validity, so a required/`pattern` value the page rejects is reported
+`verify-failed` and the control is restored instead of being counted as filled.
+Inline validation text and site-specific JavaScript validation are **not**
+parsed.
+
+**Compatibility matrix:** see [`docs/autofill-compatibility.md`](docs/autofill-compatibility.md)
+for a per-pattern breakdown (supported / partially supported / unsupported /
+unverified), the synthetic fixture behind each status, and the evidence
+boundary.
+
 **Integration limits:** this uses the existing `activeTab` + `scripting`
 permission model and the current content-script channel — no new permissions
 and no host-permission broadening. Reliability is verified with jsdom unit tests
-only; jsdom does not reproduce a real browser (no native constraint validation,
-no real event loop or framework render cycle), so no specific-site compatibility
-is claimed. **Workday-specific handling and AI-assisted semantic field mapping
-are NOT implemented.**
+only; jsdom does not reproduce a real browser (no real event loop or framework
+render cycle), so no specific-site compatibility is claimed. **Workday-specific
+handling and AI-assisted semantic field mapping are NOT implemented.**
 
 ## Permissions
 
@@ -378,7 +391,8 @@ estimate (Prompt 09 — library + tests; formula above), its match summary UI
 in Options → Jobs (Prompt 10), the deterministic resume tailoring engine
 (Prompt 11), the fixed-layout ATS-friendly resume PDF export + Options → Jobs
 download action (Prompt 12), the local application log + Options → Applications
-tab (Prompt 13), the deterministic autofill foundation (Prompt 14), and its
-reliability/safety hardening (Prompt 15).
-**Not yet built: Workday-specific handling, AI-assisted field mapping, and the
-deeper application-form automation.**
+tab (Prompt 13), the deterministic autofill foundation (Prompt 14), its
+reliability/safety hardening (Prompt 15), and Workday-style compatibility
+discovery with a synthetic fixture set and matrix (Prompt 16).
+**Not yet built: a Workday adapter, AI-assisted field mapping, and the deeper
+application-form automation.**

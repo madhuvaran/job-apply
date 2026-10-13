@@ -124,8 +124,37 @@ function associatedLabel(element: Element, root: ParentNode): string | undefined
   }
   const closest = trimCapped(element.closest('label')?.textContent, 300);
   if (closest !== undefined) return closest;
-  // Last resort for display/classification: the accessible name.
+  // ARIA computed name: `aria-labelledby` before `aria-label`.
+  const labelledBy = referencedLabel(element);
+  if (labelledBy !== undefined) return labelledBy;
   return trimCapped(element.getAttribute('aria-label'), 300);
+}
+
+/**
+ * Resolve `aria-labelledby` (space-separated element ids) to the referenced
+ * text. Read-only metadata from the page's own markup — never a control value.
+ */
+function referencedLabel(element: Element): string | undefined {
+  const ids = (element.getAttribute('aria-labelledby') ?? '').trim();
+  if (ids.length === 0) return undefined;
+  const doc = element.ownerDocument;
+  if (doc === null) return undefined;
+  const parts: string[] = [];
+  for (const id of ids.split(/\s+/)) {
+    if (id.length === 0) continue;
+    const escaped =
+      typeof CSS !== 'undefined' && CSS.escape !== undefined ? CSS.escape(id) : id;
+    let ref: Element | null = null;
+    try {
+      ref = doc.querySelector(`#${escaped}`);
+    } catch {
+      ref = null;
+    }
+    const text = (ref?.textContent ?? '').trim();
+    if (text.length > 0) parts.push(text);
+  }
+  const joined = parts.join(' ').trim();
+  return joined.length > 0 ? joined.slice(0, 300) : undefined;
 }
 
 /** Legend/aria-label for a radio group (the question text), not the option text. */
@@ -140,19 +169,23 @@ function radioGroupLabel(element: Element, root: ParentNode): string | undefined
 
 function baseAttributes(element: HTMLElement): Pick<
   FieldDescriptor,
-  'name' | 'elementId' | 'autocomplete' | 'ariaLabel' | 'placeholder'
+  'name' | 'elementId' | 'autocomplete' | 'ariaLabel' | 'placeholder' | 'role' | 'ariaHasPopup'
 > {
   const name = trimCapped(element.getAttribute('name'), 200);
   const id = trimCapped(element.id, 200);
   const autocomplete = trimCapped(element.getAttribute('autocomplete'), 200);
   const ariaLabel = trimCapped(element.getAttribute('aria-label'), 300);
   const placeholder = trimCapped(element.getAttribute('placeholder'), 300);
+  const role = trimCapped(element.getAttribute('role'), 60);
+  const ariaHasPopup = trimCapped(element.getAttribute('aria-haspopup'), 60);
   return {
     ...(name !== undefined ? { name } : {}),
     ...(id !== undefined ? { elementId: id } : {}),
     ...(autocomplete !== undefined ? { autocomplete } : {}),
     ...(ariaLabel !== undefined ? { ariaLabel } : {}),
     ...(placeholder !== undefined ? { placeholder } : {}),
+    ...(role !== undefined ? { role } : {}),
+    ...(ariaHasPopup !== undefined ? { ariaHasPopup } : {}),
   };
 }
 

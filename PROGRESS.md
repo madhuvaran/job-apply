@@ -1,5 +1,80 @@
 # PROGRESS
 
+## Done (2026-10-13, task 18 / Prompt 16: Workday compatibility discovery & fixtures)
+Focused **discovery + fixture** task. No Workday adapter, no AI mapping, and no
+broad change to autofill behavior. Evidence is split into **demonstrated**
+(our fixtures/tests), **inferred** (standard HTML/ARIA semantics) and
+**unverified Workday behavior** (no authenticated Workday environment was used).
+- **`src/lib/autofill/schemas.ts`** — `fieldDescriptorSchema` gains two optional
+  value-free metadata fields: `role` and `ariaHasPopup` (used to spot custom
+  widgets). Still `.strict()`.
+- **`src/lib/autofill/page.ts`** — label extraction now resolves
+  **`aria-labelledby`** to the referenced element(s) text (previously ignored —
+  a real defect), and `baseAttributes` captures `role` + `aria-haspopup`.
+  Values are still never read.
+- **`src/lib/autofill/classify.ts`** — a custom ARIA combobox/listbox
+  (explicit `role="combobox"`/`listbox`, or `aria-haspopup` listbox/tree/grid)
+  is now classified **ambiguous → manual** instead of being considered fillable
+  text. Native `<select>` is explicitly unaffected; `aria-haspopup="menu"` is
+  not treated as a picker.
+- **`src/lib/autofill/execute.ts`** — after writing, the executor checks the
+  browser's **constraint validity**; a value the page still deems invalid
+  (unsatisfied `required`/`pattern`/`type`) returns `verify-failed`, **restores**
+  the control to its previous value, and fires no events (so "left unchanged" is
+  accurate). Inline validation messages are not parsed.
+- **`src/lib/autofill/workday.test.ts`** (new, **18 tests**) — synthetic
+  fixtures + characterization: visible/`aria-label`/`aria-labelledby` label
+  extraction; native `<select>` vs custom `role="combobox"` (and
+  `aria-haspopup` listbox/menu); custom combobox excluded from the plan; radio
+  legend context; descriptive vs consent checkboxes; required `pattern` field
+  `verify-failed` + value restored, and valid value filled; replaced field →
+  `disconnected`/no re-resolution; multi-select skipped and selections intact;
+  compensation/legal exclusions; stale-session rejection; no network call.
+- **`docs/autofill-compatibility.md`** (new) — per-pattern compatibility matrix
+  (supported / partially supported / unsupported / unverified) with the fixture
+  behind each status, confirmation requirement, limitations and manual fallback.
+- **`README.md`** — documents custom-combobox/manual behavior, constraint
+  verification and links the matrix.
+
+### Commands run this task (exit statuses captured inline)
+- `npx vitest run` → **exit 0, 545/545 passed** (34 files; 527 baseline + 18 new)
+- `npm run compile` → **exit 0**
+- `npm run build` → **exit 0**; built manifest unchanged:
+  `permissions = ["storage", "activeTab", "scripting"]`, **no** `host_permissions`
+- Inspected diff/status: no real candidate/application data or secrets; no
+  `.env`, `node_modules` or build artifacts staged; `wxt.config.ts`, manifest
+  permissions and content-script `matches` unchanged; matching/tailoring/PDF/
+  application-log sources NOT modified; no new dependencies.
+
+### Demonstrated vs unverified
+- **Demonstrated (fixtures/tests):** labels (visible/`aria-label`/
+  `aria-labelledby`), native single-select, custom combobox → manual, radio
+  legend scoping, checkbox classification, required+`pattern` verification,
+  replaced-field refusal, multi-select refusal, sensitive exclusions, stale
+  session, offline.
+- **Inferred:** ARIA combobox/listbox role semantics; that popup widgets need
+  real interaction the engine does not perform.
+- **Unverified on Workday:** everything site-specific (async option loading,
+  custom widgets without ARIA roles, `<div role="combobox">` without a native
+  control, inline validation rendering, datalist comboboxes). No Workday
+  environment was accessed.
+
+### Limitations / known issues
+- Inline validation messages and site-specific JS validation are not parsed;
+  only the browser constraint API is checked.
+- A custom combobox with neither `role="combobox"` nor an
+  `aria-haspopup` listbox/tree/grid cannot be detected and may be treated as
+  plain text (documented, unverified).
+- `<div role="combobox">` widgets with no native control are never scanned.
+- jsdom-only verification: no real browser event loop/framework render cycle;
+  no specific-site compatibility is claimed.
+
+### Next
+- If pursued, a real Workday test environment (permitted, authenticated) to
+  upgrade the "unverified" rows; otherwise keep autofill local and confirmed.
+
+---
+
 ## Done (2026-10-13, task 17 / Prompt 15: autofill hardening & compatibility)
 - **`src/lib/autofill/execute.ts`** (hardened) — reliability + safety:
   - Controlled inputs: text/textarea/select writes go through the element's
