@@ -138,7 +138,7 @@ export type AiRunResult =
 /* Per-attempt call with timeout                                       */
 /* ------------------------------------------------------------------ */
 
-interface AttemptResult {
+export interface ProviderAttemptResult {
   outcome: AiProviderOutcome;
   /** Set when the provider THREW (unexpected fault): name only, never a message. */
   fault?: { errorName: string };
@@ -148,12 +148,17 @@ function isAbortError(err: unknown): boolean {
   return err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError');
 }
 
-async function callOnce(
-  provider: AiProvider,
-  request: AiRequest,
+/**
+ * One provider call with a per-attempt timeout. Exported (Prompt 17) so the
+ * semantic field-mapping runner reuses the exact same timeout/abort/fault
+ * behavior instead of duplicating it. Generic over the request type.
+ */
+export async function callProviderOnce<Request = AiRequest>(
+  provider: AiProvider<Request>,
+  request: Request,
   attempt: number,
   timeoutMs: number,
-): Promise<AttemptResult> {
+): Promise<ProviderAttemptResult> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -175,8 +180,8 @@ async function callOnce(
   }
   const attemptPromise = started
     .then(
-      (outcome): AttemptResult => ({ outcome }),
-      (err: unknown): AttemptResult => {
+      (outcome): ProviderAttemptResult => ({ outcome }),
+      (err: unknown): ProviderAttemptResult => {
         if (controller.signal.aborted || isAbortError(err)) {
           return { outcome: { kind: 'failure', failure: { kind: 'timeout' } } };
         }
@@ -198,12 +203,12 @@ async function callOnce(
 /* Failure mapping + retry policy                                      */
 /* ------------------------------------------------------------------ */
 
-interface MappedFailure {
+export interface MappedFailure {
   error: AiError;
   retryable: boolean;
 }
 
-function mapFailure(failure: AiProviderFailure): MappedFailure {
+export function mapProviderFailure(failure: AiProviderFailure): MappedFailure {
   switch (failure.kind) {
     case 'rate-limited':
       return {
@@ -273,7 +278,7 @@ export async function runAiRequest(
   }
 
   for (let attempt = 1; attempt <= resolved.maxAttempts; attempt += 1) {
-    const { outcome, fault } = await callOnce(provider, request, attempt, resolved.timeoutMs);
+    const { outcome, fault } = await callProviderOnce(provider, request, attempt, resolved.timeoutMs);
 
     if (outcome.kind === 'response') {
       const validated = validateAiResponse(outcome.raw);
@@ -295,7 +300,7 @@ export async function runAiRequest(
       };
     }
 
-    const mapped = mapFailure(outcome.failure);
+    const mapped = mapProviderFailure(outcome.failure);
     if (!mapped.retryable || attempt === resolved.maxAttempts) {
       return { kind: 'error', error: mapped.error, attempts: attempt };
     }

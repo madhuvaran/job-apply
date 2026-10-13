@@ -11,18 +11,21 @@
  * so they can never be conflated with AI-safe profile data. The planner drops
  * no data into any AI payload — it does not touch the AI layer at all.
  */
+import { z } from 'zod';
 import { profileSchema, type Profile } from '../profile';
 import { sensitiveProfileSchema, type Legal, type SensitiveProfile } from '../sensitive';
 import { classifyField } from './classify';
 import {
+  FIELD_CATEGORIES,
   fieldDescriptorsSchema,
   fillPlanSchema,
   formatIssues,
+  type FieldCategory,
+  type FieldClassification,
+  type FieldDescriptor,
   type FillInstruction,
   type FillPlan,
   type FillSource,
-  type FieldCategory,
-  type FieldDescriptor,
 } from './schemas';
 
 /** Deterministic labels for the saved work-authorization enum. */
@@ -62,6 +65,31 @@ export interface BuildPlanInput {
   descriptors: unknown;
   profile: unknown;
   sensitive: unknown;
+  /**
+   * Optional, user-approved category overrides keyed by `fieldId` (Prompt 17).
+   * Used ONLY for fields the deterministic classifier left ambiguous/
+   * unsupported; it can never override an excluded or already-recognised field,
+   * and legal categories are never overridable. Supplied by the AI-mapping
+   * review step — the planner still resolves the value from the saved profile.
+   */
+  categoryOverrides?: unknown;
+}
+
+/** Strict, bounded map of fieldId → supported category for approved mappings. */
+export const categoryOverridesSchema = z
+  .record(z.string().min(1).max(80), z.enum(FIELD_CATEGORIES))
+  .refine((m) => Object.keys(m).length <= 200, { message: 'too many overrides' });
+
+/** Legal-status categories the AI may never supply a mapping for. */
+const NON_OVERRIDABLE_CATEGORIES = new Set<FieldCategory>(['workAuthorization', 'sponsorship']);
+
+function applicableOverride(
+  classification: FieldClassification,
+  category: FieldCategory,
+): FieldCategory | null {
+  if (classification.kind === 'excluded' || classification.kind === 'supported') return null;
+  if (NON_OVERRIDABLE_CATEGORIES.has(category)) return null;
+  return category;
 }
 
 interface ResolvedValue {
@@ -154,11 +182,29 @@ export function buildFillPlan(input: BuildPlanInput): BuildPlanResult {
     sensitive = parsed.data;
   }
 
+  const overridesParsed =
+    input.categoryOverrides === undefined || input.categoryOverrides === null
+      ? ({ success: true as const, data: {} as Record<string, FieldCategory> })
+      : categoryOverridesSchema.safeParse(input.categoryOverrides);
+  if (!overridesParsed.success) {
+    return {
+      ok: false,
+      reason: 'invalid-input',
+      issues: formatIssues(overridesParsed.error).map((i) => `categoryOverrides.${i}`),
+    };
+  }
+  const overrides = overridesParsed.data;
+
   const instructions: FillInstruction[] = [];
   const review: PlanReviewEntry[] = [];
 
   descriptors.data.forEach((descriptor, index) => {
-    const classification = classifyField(descriptor);
+    let classification: FieldClassification = classifyField(descriptor);
+    const overrideCategory = overrides[descriptor.fieldId];
+    if (overrideCategory !== undefined) {
+      const applied = applicableOverride(classification, overrideCategory);
+      if (applied !== null) classification = { kind: 'supported', category: applied };
+    }
     const base = {
       fieldId: descriptor.fieldId,
       displayLabel: displayLabelFor(descriptor, index),

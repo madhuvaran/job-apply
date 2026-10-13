@@ -1,5 +1,5 @@
 /**
- * The provider interface (Prompt 06).
+ * The provider interface (Prompt 06; generalized Prompt 17).
  *
  * A provider is a TRANSPORT: it takes a validated `AiRequest` and returns
  * either a raw response object (validated by the orchestrator against
@@ -17,6 +17,13 @@
  * - Do not mutate the request.
  */
 import type { AiRequest } from './schemas';
+
+/**
+ * Providers are generic over the request type (default `AiRequest`, the
+ * resume/answer contract). The transport is shape-agnostic — it just serializes
+ * the request as JSON to the backend proxy — so the semantic field-mapping
+ * layer (Prompt 17) reuses it with its own minimal request type.
+ */
 
 export interface AiProviderCallContext {
   /** Aborted when the orchestrator's per-attempt timeout fires. */
@@ -44,8 +51,8 @@ export type AiProviderOutcome =
   | { kind: 'response'; raw: unknown }
   | { kind: 'failure'; failure: AiProviderFailure };
 
-export interface AiProvider {
+export interface AiProvider<Request = AiRequest> {
   /** Stable, non-secret identifier (e.g. 'proxy', 'mock'). Never a credential. */
   readonly id: string;
-  send(request: AiRequest, ctx: AiProviderCallContext): Promise<AiProviderOutcome>;
+  send(request: Request, ctx: AiProviderCallContext): Promise<AiProviderOutcome>;
 }

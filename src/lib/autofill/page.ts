@@ -23,7 +23,7 @@ import {
   type FieldDescriptor,
   type FillReport,
 } from './schemas';
-import { executeFillPlan } from './execute';
+import { executeFillPlan, isElementHidden } from './execute';
 
 export const AUTOFILL_SCAN_REQUEST_TYPE = 'job-apply/autofill-scan';
 export const AUTOFILL_FILL_REQUEST_TYPE = 'job-apply/autofill-fill';
@@ -169,7 +169,17 @@ function radioGroupLabel(element: Element, root: ParentNode): string | undefined
 
 function baseAttributes(element: HTMLElement): Pick<
   FieldDescriptor,
-  'name' | 'elementId' | 'autocomplete' | 'ariaLabel' | 'placeholder' | 'role' | 'ariaHasPopup'
+  | 'name'
+  | 'elementId'
+  | 'autocomplete'
+  | 'ariaLabel'
+  | 'placeholder'
+  | 'role'
+  | 'ariaHasPopup'
+  | 'multiple'
+  | 'disabled'
+  | 'readOnly'
+  | 'hidden'
 > {
   const name = trimCapped(element.getAttribute('name'), 200);
   const id = trimCapped(element.id, 200);
@@ -178,6 +188,12 @@ function baseAttributes(element: HTMLElement): Pick<
   const placeholder = trimCapped(element.getAttribute('placeholder'), 300);
   const role = trimCapped(element.getAttribute('role'), 60);
   const ariaHasPopup = trimCapped(element.getAttribute('aria-haspopup'), 60);
+  // Value-free control STATE (booleans only) so the mapping layer can exclude
+  // non-interactable / multi-select controls. No field values are read.
+  const multiple = (element as { multiple?: unknown }).multiple === true;
+  const disabled = (element as { disabled?: unknown }).disabled === true;
+  const readOnly = (element as { readOnly?: unknown }).readOnly === true;
+  const hidden = isElementHidden(element);
   return {
     ...(name !== undefined ? { name } : {}),
     ...(id !== undefined ? { elementId: id } : {}),
@@ -186,6 +202,10 @@ function baseAttributes(element: HTMLElement): Pick<
     ...(placeholder !== undefined ? { placeholder } : {}),
     ...(role !== undefined ? { role } : {}),
     ...(ariaHasPopup !== undefined ? { ariaHasPopup } : {}),
+    ...(multiple ? { multiple: true } : {}),
+    ...(disabled ? { disabled: true } : {}),
+    ...(readOnly ? { readOnly: true } : {}),
+    ...(hidden ? { hidden: true } : {}),
   };
 }
 

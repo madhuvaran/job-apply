@@ -155,7 +155,7 @@ function isReadOnly(element: Element): boolean {
   return (element as { readOnly?: unknown }).readOnly === true;
 }
 
-function isHidden(element: Element): boolean {
+export function isElementHidden(element: Element): boolean {
   if ((element as { hidden?: unknown }).hidden === true) return true;
   if (element.closest('[hidden]') !== null) return true;
   if (element.getAttribute('aria-hidden') === 'true') return true;
@@ -283,7 +283,7 @@ function fillCheckbox(element: Element, plannedValue: string): FillStatus {
 }
 
 function tryFillTextLike(element: Element, plannedValue: string): FillStatus {
-  if (isHidden(element)) return 'hidden';
+  if (isElementHidden(element)) return 'hidden';
   if (!isEnabled(element)) return 'disabled';
   if (isReadOnly(element)) return 'read-only';
   return fillTextLike(element, plannedValue);
@@ -296,12 +296,12 @@ function fillOne(element: Element | undefined, plannedValue: string): FillStatus
     const type = element.type.toLowerCase();
     if (type === 'radio') {
       if (!isEnabled(element)) return 'disabled';
-      if (isHidden(element)) return 'hidden';
+      if (isElementHidden(element)) return 'hidden';
       return fillRadio(element, plannedValue);
     }
     if (type === 'checkbox') {
       if (!isEnabled(element)) return 'disabled';
-      if (isHidden(element)) return 'hidden';
+      if (isElementHidden(element)) return 'hidden';
       return fillCheckbox(element, plannedValue);
     }
     if (type === 'hidden') return 'hidden';
@@ -311,7 +311,7 @@ function fillOne(element: Element | undefined, plannedValue: string): FillStatus
     return tryFillTextLike(element, plannedValue);
   }
   if (element instanceof HTMLSelectElement) {
-    if (isHidden(element)) return 'hidden';
+    if (isElementHidden(element)) return 'hidden';
     if (!isEnabled(element)) return 'disabled';
     return fillSelect(element, plannedValue);
   }

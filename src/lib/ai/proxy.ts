@@ -64,7 +64,9 @@ function isAbortLike(err: unknown, signal: AbortSignal): boolean {
  * error at wiring time — never during a request; requests return typed
  * results via `runAiRequest`).
  */
-export function createProxyProvider(options: ProxyProviderOptions): AiProvider {
+export function createProxyProvider<Request = AiRequest>(
+  options: ProxyProviderOptions,
+): AiProvider<Request> {
   const parsedOptions = proxyProviderOptionsSchema.safeParse(options);
   if (!parsedOptions.success) {
     const issues = parsedOptions.error.issues
@@ -80,7 +82,7 @@ export function createProxyProvider(options: ProxyProviderOptions): AiProvider {
 
   return {
     id: 'proxy',
-    async send(request: AiRequest, ctx: AiProviderCallContext): Promise<AiProviderOutcome> {
+    async send(request: Request, ctx: AiProviderCallContext): Promise<AiProviderOutcome> {
       let res: Response;
       try {
         res = await fetchImpl(endpoint, {

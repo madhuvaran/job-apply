@@ -129,3 +129,25 @@ as plain text. **Actual Workday behavior for all of the above is unverified** �
 establishing it would require a permitted, authenticated test environment, which
 this task deliberately did not use. Custom-combobox interaction (clicking popup
 options, keyboard driving) is intentionally out of scope.
+
+## AI-assisted semantic mapping (opt-in, Prompt 17)
+
+For fields the deterministic classifier leaves **ambiguous/unsupported**, an
+optional layer can ask a configured provider to suggest which **saved answer
+category** a field maps to. This never changes the deterministic rows above and
+never produces an answer or a DOM action.
+
+| Aspect | Behavior |
+|---|---|
+| Default | **Off** (`aiEnabled:false`) — zero provider/network calls. |
+| Trigger | Explicit **"Suggest field mappings with AI"** in the popup; never on scan/load. |
+| Request contents | Per eligible field: opaque `fieldId`, short normalized `label`, control `kind`, plus the fixed list of categories the user has saved answers for. **Nothing else.** |
+| Never sent | Field values, page text/HTML/DOM, URLs, job description, profile/settings, employer content, sensitive data, API keys. |
+| Eligible | Ambiguous/unsupported, interactable, single-valued, non-sensitive label, not a custom combobox. |
+| Never eligible/mapped | Password/auth, OTP, payment/bank, CAPTCHA, legal/consent, compensation, EEO/voluntary, **work authorization / sponsorship**, multi-select, hidden/disabled/read-only. |
+| Response | Fixed category enum + bounded confidence (0–1) + fixed reason code (strict schema). |
+| Confidence | Suggestions `< 0.7` stay manual; model confidence is a hint, not proof. |
+| Approval | Per-field user approval; approved mappings re-enter the **same planner/executor** and still need **Confirm & fill**. |
+| Failure modes | disabled / unavailable / no-eligible / no-saved-answers / timeout / rate-limit / invalid-response → typed results, fields stay manual, no retry with a bigger payload. |
+| Integration | Documented blocker: no backend AI endpoint is configurable in this build, so the popup action reports "unavailable" and stays manual. |
+| Evidence | Demonstrated by `src/lib/autofill/mapping.test.ts` (28 tests, jsdom). **Unverified:** a real browser and a live provider. |

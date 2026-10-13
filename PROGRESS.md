@@ -1,5 +1,105 @@
 # PROGRESS
 
+## Done (2026-10-13, task 19 / Prompt 17: opt-in AI-assisted field mapping)
+A NARROW semantic-suggestion layer for fields the deterministic classifier cannot
+confidently recognise. AI maps a field to an EXISTING saved-answer category; it
+never answers, never fills, and never touches the DOM.
+- **`src/lib/autofill/mapping.ts`** (new) — strict zod v4 (`.strict()`) request /
+  response / proposal contracts plus the eligibility gate, request builder,
+  response validator, proposal + approval, and one orchestrator:
+  - **Request (the only thing sent):** `{schemaVersion, task:'map-fields',
+    allowedCategories, fields:[{fieldId,label,kind}]}`. NO values, profile, job,
+    settings, DOM/HTML, URLs, employer content or sensitive data.
+  - **Eligibility:** ambiguous/unsupported fields only, interactable +
+    single-valued (excludes multi-select, disabled, read-only, hidden, custom
+    combobox widgets), with a usable non-sensitive label (defense-in-depth
+    sensitive-indicator regex). Recognised/excluded fields are never eligible.
+  - **Allowed categories exclude** workAuthorization/sponsorship (never infer
+    legal status) and state/country (no saved source); they are further narrowed
+    to categories the user actually has saved answers for.
+  - **Response:** fixed enum categories + bounded confidence (0–1) + fixed
+    reason code; rejects unknown props/categories, duplicate/unknown field ids,
+    malformed confidence and oversized payloads. Confidence < 0.7 stays manual.
+  - **Orchestrator** reuses the existing provider transport
+    (`AiProvider<MappingRequest>`) and `callProviderOnce`/`mapProviderFailure`
+    from `src/lib/ai/run.ts` (now exported + generic) — no second client.
+    `aiEnabled:false` and a `null` provider short-circuit BEFORE any request is
+    built or sent (zero calls). Failures are typed `AiError`s, single attempt.
+- **`src/lib/autofill/plan.ts`** — `buildFillPlan` accepts optional, strict
+  `categoryOverrides` (fieldId→category). Applied ONLY where the deterministic
+  classifier is ambiguous/unsupported; never over an excluded or recognised
+  field; legal categories are never overridable. The planner still resolves the
+  value from the saved profile. Existing callers/behavior unchanged.
+- **`src/lib/autofill/schemas.ts` / `page.ts`** — value-free descriptor flags
+  `multiple`/`disabled`/`readOnly`/`hidden` (booleans only; `isElementHidden`
+  reused from `execute.ts`) so the mapping gate can exclude non-interactable and
+  multi-select controls.
+- **`src/lib/ai/provider.ts` / `proxy.ts` / `run.ts`** — `AiProvider<Request =
+  AiRequest>` is now generic (proxy is generic too); `callProviderOnce` +
+  `mapProviderFailure` exported for reuse. No behavior change for existing
+  resume/answer callers (suites unchanged).
+- **`entrypoints/popup/App.tsx`** — smallest safe UI: a gated
+  **"Suggest field mappings with AI"** action (shown only when `aiEnabled` and
+  eligible fields exist) with a plain-language explanation of the exact minimal
+  data sent; suggestions are approved PER FIELD and then re-planned through the
+  SAME `buildFillPlan`; the existing **Confirm & fill** is still required.
+  Cancel clears everything. Since this build configures no provider
+  (`MAPPING_PROVIDER = null`), the action reports "unavailable" and fields stay
+  manual — the documented integration blocker.
+- **`src/lib/autofill/mapping.test.ts`** (new, **28 tests**) — AI off ⇒ zero
+  calls; scan alone never calls; minimal request shape (no profile/job/settings/
+  values/page text); sensitive & non-interactable fields excluded; strict
+  response validation (unknown/duplicate/oversized/stale); low-confidence stays
+  manual; cancellation makes no call/write; mapping module never imports the
+  executor (source scan); approved suggestions flow planner→executor; missing
+  answers stay manual; legal/compensation/voluntary/auth/multi-select never
+  eligible; unavailable/rate-limit/timeout/invalid-response typed failures;
+  deterministic classification unchanged (overrides can't touch excluded or
+  recognized fields, nor supply a legal category); no `fetch()` outside the
+  provider; descriptor schema still strict.
+- **`README.md` / `docs/autofill-compatibility.md`** — AI mapping section:
+  off-by-default, exact data sent, eligible/excluded categories, suggestions-only
+  guarantee, backend-proxy requirement and the integration blocker.
+
+### Commands run this task (exit statuses captured inline)
+- `npx vitest run` → **exit 0, 573/573 passed** (35 files; 545 baseline + 28 new)
+- `npm run compile` → **exit 0**
+- `npm run build` → **exit 0**; built manifest unchanged:
+  `permissions = ["storage", "activeTab", "scripting"]`, **no** `host_permissions`
+
+### Privacy audit
+- AI is OFF by default (`aiEnabled:false`); zero provider/network calls when off
+  (asserted). No `fetch()`/network outside the provider abstraction (asserted).
+- No field values, profile/job/settings content, DOM/HTML, URLs, employer content,
+  sensitive data, API keys or telemetry in requests, proposals, errors or logs.
+- No new manifest/host permissions; content-script `matches` unchanged; no
+  dependency added; no direct third-party API integration.
+- Approved mappings still pass through the deterministic planner + executor;
+  explicit per-field approval and the existing Confirm step are both required.
+
+### Verified vs unverified
+- **Verified (jsdom unit tests):** all bullets above. **Not** verified: a real
+  browser, a live provider, or any specific Workday behavior.
+- **Integration blocker:** no backend AI endpoint is configurable anywhere in
+  this build; the popup AI action is therefore inactive (reports unavailable)
+  until an endpoint/provider is configured. This was implemented rather than
+  invented (no new setting/permission added).
+
+### Limitations / known issues
+- The provider transport is used generically, but the popup wires no endpoint, so
+  the AI path is exercised only by tests.
+- Category-only mapping cannot fill custom comboboxes or multi-selects (by
+  design); those stay manual.
+- Single attempt, no retry: timeout/rate-limit surface as typed errors; the
+  caller keeps fields manual (no silent provider switch or larger payload).
+
+### Next
+- Optionally configure a backend AI endpoint (existing proxy pattern) and pass a
+  real `AiProvider<MappingRequest>` into the popup so the suggestion action goes
+  live; otherwise keep autofill fully deterministic.
+
+---
+
 ## Done (2026-10-13, task 18 / Prompt 16: Workday compatibility discovery & fixtures)
 Focused **discovery + fixture** task. No Workday adapter, no AI mapping, and no
 broad change to autofill behavior. Evidence is split into **demonstrated**

@@ -8,14 +8,16 @@
  * - `execute.ts`   isolated executor for a validated plan
  * - `page.ts`      value-free DOM scanning + messaging glue
  *
- * Offline and local-only: no AI provider, no network, no sensitive data in any
- * AI payload, no new permissions. Workday-specific handling and AI-assisted
- * semantic mapping are intentionally NOT implemented here.
+ * Offline and local-only for the DETERMINISTIC engine: no AI provider, no
+ * network, no sensitive data in any AI payload, no new permissions.
+ * `mapping.ts` (Prompt 17) adds the OPT-IN, off-by-default suggestion layer on
+ * top; it never fills fields itself.
  */
 export * from './schemas';
-export { classifyField, normalizeText } from './classify';
+export { classifyField, isCustomSelectionWidget, normalizeText } from './classify';
 export {
   buildFillPlan,
+  categoryOverridesSchema,
   type BuildPlanInput,
   type BuildPlanResult,
   type PlanDecision,
@@ -39,3 +41,41 @@ export {
   type AutofillSession,
   type ScanResult,
 } from './page';
+
+export {
+  AI_MAPPABLE_CATEGORIES,
+  MAPPING_CONFIDENCE_THRESHOLD,
+  MAPPING_INPUT_KINDS,
+  MAPPING_REASONS,
+  MAPPING_SCHEMA_VERSION,
+  MAPPING_TASK,
+  MAX_MAPPING_FIELDS,
+  MAX_MAPPING_LABEL_CHARS,
+  approveMappings,
+  availableMappingCategories,
+  buildMappingProposal,
+  buildMappingRequest,
+  eligibleMappingFields,
+  mappingRequestFieldSchema,
+  mappingRequestSchema,
+  mappingResponseSchema,
+  mappingSuggestionSchema,
+  requestMappingProposal,
+  validateMappingResponse,
+  type AiMappableCategory,
+  type ApproveMappingsResult,
+  type BuildMappingRequestResult,
+  type EligibleField,
+  type MappingInputKind,
+  type MappingProposal,
+  type MappingProposalInput,
+  type MappingReason,
+  type MappingRequest,
+  type MappingRequestField,
+  type MappingResponse,
+  type MappingResponseValidation,
+  type MappingRunOptions,
+  type MappingRunResult,
+  type MappingSuggestion,
+  type MappingSuggestionEntry,
+} from './mapping';

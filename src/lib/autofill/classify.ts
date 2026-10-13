@@ -147,7 +147,7 @@ const CUSTOM_SELECTION_POPUPS = new Set(['listbox', 'tree', 'grid']);
  * An explicit ARIA combobox/listbox selection widget. Native `<select>` and
  * plain text/textarea/radio/checkbox controls are NOT affected.
  */
-function isCustomSelectionWidget(descriptor: FieldDescriptor): boolean {
+export function isCustomSelectionWidget(descriptor: FieldDescriptor): boolean {
   if (descriptor.kind === 'select') return false;
   const role = (descriptor.role ?? '').toLowerCase();
   if (role === 'combobox' || role === 'listbox') return true;

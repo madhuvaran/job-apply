@@ -78,6 +78,11 @@ export const fieldDescriptorSchema = z
     role: z.string().max(60).optional(),
     /** Explicit `aria-haspopup` value (listbox/tree/grid indicate a selection widget). */
     ariaHasPopup: z.string().max(60).optional(),
+    /** Value-free interactability flags (Prompt 17) — never contain content. */
+    multiple: z.boolean().optional(),
+    disabled: z.boolean().optional(),
+    readOnly: z.boolean().optional(),
+    hidden: z.boolean().optional(),
   })
   .strict();
 export type FieldDescriptor = z.infer<typeof fieldDescriptorSchema>;

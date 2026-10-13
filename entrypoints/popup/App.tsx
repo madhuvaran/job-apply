@@ -16,21 +16,34 @@
 import { useCallback, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { CAPTURE_REQUEST_TYPE, validateCaptureResponse } from '../../src/lib/capture';
+import type { AiProvider } from '../../src/lib/ai';
 import {
   AUTOFILL_FILL_REQUEST_TYPE,
   AUTOFILL_SCAN_REQUEST_TYPE,
+  approveMappings,
   buildFillPlan,
+  eligibleMappingFields,
+  requestMappingProposal,
   validateFillResponse,
   validateScanResponse,
+  type FieldDescriptor,
   type FillPlan,
+  type MappingProposal,
+  type MappingRequest,
   type PlanReviewEntry,
 } from '../../src/lib/autofill';
+import type { Settings } from '../../src/lib/settings';
 import {
   createJobPosting,
   validateJobPostingInput,
   MAX_RAW_DESCRIPTION_CHARS,
 } from '../../src/lib/job-posting';
-import { loadProfile, loadSensitiveProfile, upsertJobPosting } from '../../src/lib/storage';
+import {
+  loadProfile,
+  loadSensitiveProfile,
+  loadSettings,
+  upsertJobPosting,
+} from '../../src/lib/storage';
 import './App.css';
 
 type Stage =
@@ -61,6 +74,41 @@ interface AfSummary {
 
 const EMPTY_FORM: FormState = { title: '', company: '', location: '', url: '', description: '' };
 
+/**
+ * The AI mapping transport. There is deliberately NO endpoint/credential here:
+ * this build configures no backend provider, so the value is `null` and the AI
+ * action reports "unavailable" while every field stays manual. Wiring a real
+ * provider (the existing backend-proxy pattern) is the documented integration
+ * blocker — no second client, no API key, no new permission is added here.
+ */
+const MAPPING_PROVIDER: AiProvider<MappingRequest> | null = null;
+
+/** Fixed, content-free messages for AI mapping failures (never page/answer data). */
+const MAPPING_ERROR_TEXT: Record<string, string> = {
+  'invalid-request': 'AI mapping could not be prepared. Fields stay manual.',
+  'invalid-response': 'The AI returned a result we could not use. Fields stay manual.',
+  timeout: 'The AI provider timed out. Fields stay manual.',
+  'rate-limited': 'The AI provider is rate limiting. Try again later; fields stay manual.',
+  http: 'The AI provider returned an error. Fields stay manual.',
+  network: 'Could not reach the AI provider. Fields stay manual.',
+  'provider-fault': 'The AI provider failed. Fields stay manual.',
+};
+
+interface AfContext {
+  profile: unknown;
+  sensitive: unknown;
+  settings: Settings | null;
+}
+
+interface AiState {
+  status: 'idle' | 'loading' | 'unavailable' | 'empty' | 'error' | 'ready';
+  message?: string;
+  proposal?: MappingProposal;
+  selected: Record<string, boolean>;
+}
+
+const IDLE_AI: AiState = { status: 'idle', selected: {} };
+
 function App() {
   const [stage, setStage] = useState<Stage>('idle');
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
@@ -74,6 +122,11 @@ function App() {
   // by the page for this exact scan (stale/tampered requests are rejected).
   const [afScanId, setAfScanId] = useState<string | null>(null);
   const [afSummary, setAfSummary] = useState<AfSummary | null>(null);
+  // Deterministic inputs kept so an approved AI mapping can be re-planned
+  // through the SAME planner. Held in memory only; never stored or logged.
+  const [afDescriptors, setAfDescriptors] = useState<FieldDescriptor[]>([]);
+  const [afContext, setAfContext] = useState<AfContext | null>(null);
+  const [aiState, setAiState] = useState<AiState>(IDLE_AI);
 
   const fail = useCallback((message: string) => {
     setErrorText(message);
@@ -162,6 +215,9 @@ function App() {
     setAfPlan(null);
     setAfScanId(null);
     setAfSummary(null);
+    setAfDescriptors([]);
+    setAfContext(null);
+    setAiState(IDLE_AI);
     setStage('af-scanning');
     try {
       const tab = await activeTab();
@@ -184,11 +240,18 @@ function App() {
         return;
       }
 
-      const [profileRes, sensitiveRes] = await Promise.all([loadProfile(), loadSensitiveProfile()]);
+      const [profileRes, sensitiveRes, settingsRes] = await Promise.all([
+        loadProfile(),
+        loadSensitiveProfile(),
+        loadSettings(),
+      ]);
+      const profileData = profileRes.ok ? profileRes.data : null;
+      const sensitiveData = sensitiveRes.ok ? sensitiveRes.data : null;
+      const settingsData = settingsRes.ok ? settingsRes.data : null;
       const built = buildFillPlan({
         descriptors: scan.value.descriptors,
-        profile: profileRes.ok ? profileRes.data : null,
-        sensitive: sensitiveRes.ok ? sensitiveRes.data : null,
+        profile: profileData,
+        sensitive: sensitiveData,
       });
       if (!built.ok) {
         fail('Your saved profile could not be used for autofill. Check it in Options and try again.');
@@ -197,6 +260,8 @@ function App() {
       setAfReview(built.review);
       setAfPlan(built.plan);
       setAfScanId(scan.value.scanId);
+      setAfDescriptors(scan.value.descriptors);
+      setAfContext({ profile: profileData, sensitive: sensitiveData, settings: settingsData });
       setStage('af-preview');
     } catch {
       fail('Could not reach this tab. Re-open the popup and try again.');
@@ -247,8 +312,76 @@ function App() {
     setAfPlan(null);
     setAfScanId(null);
     setAfSummary(null);
+    setAfDescriptors([]);
+    setAfContext(null);
+    setAiState(IDLE_AI);
     setStage('idle'); // nothing was written or filled
   }, []);
+
+  /* ---------------- AI mapping (opt-in; provider may be unavailable) -------- */
+  const onAiSuggest = useCallback(async () => {
+    if (afScanId === null || afContext === null) return;
+    setAiState({ status: 'loading', selected: {} });
+    const result = await requestMappingProposal({
+      descriptors: afDescriptors,
+      profile: afContext.profile,
+      sensitive: afContext.sensitive,
+      settings: afContext.settings ?? { aiEnabled: false } as Settings,
+      scanId: afScanId,
+      provider: MAPPING_PROVIDER,
+    });
+    if (result.kind === 'ok') {
+      setAiState({ status: 'ready', proposal: result.proposal, selected: {} });
+      return;
+    }
+    if (result.kind === 'provider-unavailable') {
+      setAiState({
+        status: 'unavailable',
+        message: 'No AI provider is configured in this build, so mapping stays manual.',
+        selected: {},
+      });
+      return;
+    }
+    if (result.kind === 'no-eligible-fields' || result.kind === 'no-saved-answers') {
+      setAiState({ status: 'empty', message: 'Nothing to map automatically.', selected: {} });
+      return;
+    }
+    if (result.kind === 'ai-disabled') {
+      setAiState(IDLE_AI);
+      return;
+    }
+    setAiState({ status: 'error', message: MAPPING_ERROR_TEXT[result.error.kind] ?? 'AI mapping failed. Fields stay manual.', selected: {} });
+  }, [afDescriptors, afContext, afScanId]);
+
+  const onAiToggle = useCallback((fieldId: string, checked: boolean) => {
+    setAiState((s) => ({ ...s, selected: { ...s.selected, [fieldId]: checked } }));
+  }, []);
+
+  const onAiApplyApproved = useCallback(() => {
+    const proposal = aiState.proposal;
+    if (proposal === undefined || afScanId === null || afContext === null) return;
+    const approvedIds = Object.entries(aiState.selected)
+      .filter(([, checked]) => checked)
+      .map(([fieldId]) => fieldId);
+    const approved = approveMappings(proposal, approvedIds, afScanId);
+    if (!approved.ok) {
+      fail('The form changed since it was scanned. Nothing was changed — reopen the popup and scan again.');
+      return;
+    }
+    const rebuilt = buildFillPlan({
+      descriptors: afDescriptors,
+      profile: afContext.profile,
+      sensitive: afContext.sensitive,
+      categoryOverrides: approved.categoryOverrides,
+    });
+    if (!rebuilt.ok) {
+      fail('Your saved profile could not be used for autofill. Check it in Options and try again.');
+      return;
+    }
+    setAfReview(rebuilt.review);
+    setAfPlan(rebuilt.plan);
+    setAiState(IDLE_AI); // suggestions are consumed; execution still needs Confirm
+  }, [afDescriptors, afContext, afScanId, aiState.proposal, aiState.selected, fail]);
 
   /* ---------------- save / cancel (capture) ---------------- */
   const onSave = useCallback(async () => {
@@ -292,6 +425,8 @@ function App() {
 
   const fillable = afReview.filter((r) => r.decision === 'fill');
   const manual = afReview.filter((r) => r.decision === 'manual');
+  const aiEnabled = afContext?.settings?.aiEnabled === true;
+  const aiEligible = aiEnabled && afDescriptors.length > 0 ? eligibleMappingFields(afDescriptors) : [];
 
   return (
     <div className="popup">
@@ -335,6 +470,71 @@ function App() {
             Review before filling. Nothing is filled until you confirm, and the form is never
             submitted.
           </p>
+
+          {aiEnabled && aiEligible.length > 0 && (
+            <div className="af-ai">
+              <h2 className="af-heading">AI-assisted mapping (optional)</h2>
+              <p className="hint small">
+                Only the field <strong>labels</strong>, the control type, and the list of answer
+                categories you have saved are sent to your configured provider — never field
+                values, your profile, the job description, or any page content. AI only suggests
+                which saved answer a field belongs to; you approve each one, and only then does the
+                usual review and confirm step apply.
+              </p>
+              {aiState.status === 'idle' && (
+                <button type="button" onClick={() => void onAiSuggest()}>
+                  Suggest field mappings with AI
+                </button>
+              )}
+              {aiState.status === 'loading' && <p className="hint">Asking your AI provider&hellip;</p>}
+              {(aiState.status === 'unavailable' ||
+                aiState.status === 'empty' ||
+                aiState.status === 'error') && (
+                <p className="hint small" role="status">
+                  {aiState.message}
+                </p>
+              )}
+              {aiState.status === 'ready' && aiState.proposal !== undefined && (
+                <div>
+                  <p className="hint small">
+                    {aiState.proposal.suggestedCount} suggestion
+                    {aiState.proposal.suggestedCount === 1 ? '' : 's'} — approve the ones you agree
+                    with; they then join the fill plan for the usual confirm step.
+                  </p>
+                  <ul className="af-list">
+                    {aiState.proposal.entries.map((e) => (
+                      <li key={e.fieldId} className="af-row">
+                        {e.decision === 'suggest' ? (
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={aiState.selected[e.fieldId] === true}
+                              onChange={(ev) => onAiToggle(e.fieldId, ev.target.checked)}
+                            />{' '}
+                            <strong>{e.displayLabel}</strong>{' '}
+                            <span className="af-value">→ {e.category}</span>
+                            <span className="hint small">{e.reason}</span>
+                          </label>
+                        ) : (
+                          <>
+                            <strong>{e.displayLabel}</strong>
+                            <span className="hint small">{e.reason}</span>
+                          </>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                  <button type="button" onClick={onAiApplyApproved}>
+                    Apply approved mappings
+                  </button>
+                  <button type="button" onClick={() => setAiState(IDLE_AI)}>
+                    Dismiss suggestions
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           <h2 className="af-heading">Will fill ({fillable.length})</h2>
           {fillable.length === 0 ? (
             <p className="hint">Nothing can be filled automatically — see below.</p>

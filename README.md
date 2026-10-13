@@ -356,12 +356,50 @@ for a per-pattern breakdown (supported / partially supported / unsupported /
 unverified), the synthetic fixture behind each status, and the evidence
 boundary.
 
+**AI-assisted field mapping (opt-in, off by default):** for fields the
+deterministic classifier leaves *ambiguous* or *unsupported*, an optional
+"suggestions" layer can ask your configured AI provider which **saved answer
+category** a field belongs to. It is off unless you enable AI in Settings, and it
+only runs when you explicitly click **Suggest field mappings with AI** — never
+during scanning or page load.
+
+- **What is sent (and only this):** for each eligible field an opaque field id, a
+  short normalized label, the control type, and the fixed list of answer
+  categories **you actually have saved answers for**. No field values, no page
+  text/HTML/DOM, no URLs, no job description, no profile content, no settings,
+  no sensitive data. AI stays off ⇒ **zero** provider calls.
+- **Eligible:** ambiguous/unsupported, interactable, single-valued fields with a
+  usable non-sensitive label.
+- **Never sent / never mapped:** passwords & authentication codes, payment/bank
+  fields, CAPTCHA, legal/consent/attestation, compensation/salary, voluntary
+  demographic (EEO) questions, **work authorization / sponsorship** (the model
+  must never infer legal status), multi-select controls, hidden/disabled/
+  read-only fields, and every field the deterministic classifier already
+  recognizes.
+- **AI suggests mappings only** — it never provides an answer, never runs the
+  executor, never chooses a DOM element, and never alters a fill plan. It returns
+  a category + bounded confidence + a fixed reason code. Suggestions below a
+  conservative threshold stay manual; approval is **per field**, and approved
+  mappings go back through the **existing deterministic planner and executor**
+  (which resolve the value from your saved profile) and still require the normal
+  **Confirm & fill**.
+- **Provider:** only the documented backend-proxy pattern — no API key, no second
+  client, no new manifest/host permission, no telemetry.
+
+**Integration blocker (documented):** this build configures no backend AI
+endpoint anywhere (Settings has no endpoint field, and adding one is out of
+scope here), so `resolveMappingProvider()` is `null` and the AI action reports
+that mapping is unavailable while every field stays manual. The validated
+proposal library, planner integration and tests are complete; wiring the popup
+to a real provider is deferred until an endpoint is configured. Verified through
+jsdom unit tests only (no real-browser or live-provider testing).
+
 **Integration limits:** this uses the existing `activeTab` + `scripting`
 permission model and the current content-script channel — no new permissions
 and no host-permission broadening. Reliability is verified with jsdom unit tests
 only; jsdom does not reproduce a real browser (no real event loop or framework
 render cycle), so no specific-site compatibility is claimed. **Workday-specific
-handling and AI-assisted semantic field mapping are NOT implemented.**
+handling is NOT implemented.**
 
 ## Permissions
 
@@ -392,7 +430,8 @@ in Options → Jobs (Prompt 10), the deterministic resume tailoring engine
 (Prompt 11), the fixed-layout ATS-friendly resume PDF export + Options → Jobs
 download action (Prompt 12), the local application log + Options → Applications
 tab (Prompt 13), the deterministic autofill foundation (Prompt 14), its
-reliability/safety hardening (Prompt 15), and Workday-style compatibility
-discovery with a synthetic fixture set and matrix (Prompt 16).
-**Not yet built: a Workday adapter, AI-assisted field mapping, and the deeper
-application-form automation.**
+reliability/safety hardening (Prompt 15), Workday-style compatibility discovery
+with a synthetic fixture set and matrix (Prompt 16), and the opt-in AI-assisted
+field-mapping layer (Prompt 17).
+**Not yet built: a Workday adapter, live wiring of the AI provider endpoint, and
+the deeper application-form automation.**
