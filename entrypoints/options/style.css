@@ -165,6 +165,10 @@ button.remove { color: #b91c1c; border-color: #fecaca; padding: 5px 10px; }
   flex-basis: 100%;
 }
 
+/* --- Posting date (Prompt 23) --- */
+.posting-date { display: block; }
+.posting-date-warning { display: block; font-size: 0.85rem; font-weight: 600; color: #92400e; }
+
 /* --- Settings panel --- */
 .settings-panel { display: flex; flex-direction: column; gap: 16px; }
 .settings-panel .sections { gap: 16px; }

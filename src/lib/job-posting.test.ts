@@ -14,8 +14,11 @@ import {
   MAX_RAW_DESCRIPTION_CHARS,
   postingUrlSchema,
   upsertPostingInList,
+  validateJobPostingInput,
+  validatePostingDraft,
   type JobPosting,
 } from './job-posting';
+import { postedDateFieldValue } from './job-dates';
 
 const CAPTURED_AT = '2026-10-13T10:00:00.000Z';
 
@@ -139,6 +142,99 @@ describe('unknown values are never coerced (enums and ranges stay strict)', () =
     expect(parse({ compensation: '$120k–$150k USD / year' }).compensation).toBe('$120k–$150k USD / year');
     expect(parse().compensation).toBeUndefined();
     expect(jobPostingSchema.safeParse(minimal({ compensation: '' })).success).toBe(false);
+  });
+});
+
+describe('postedDate (published posting date, optional)', () => {
+  it('defaults to ABSENT — never derived from capturedAt/updatedAt', () => {
+    const p = parse();
+    expect(p.postedDate).toBeUndefined();
+    expect('postedDate' in p).toBe(false);
+  });
+
+  it('accepts a real calendar date, including a leap day', () => {
+    expect(parse({ postedDate: '2026-10-01' }).postedDate).toBe('2026-10-01');
+    expect(parse({ postedDate: '2024-02-29' }).postedDate).toBe('2024-02-29');
+  });
+
+  it('rejects impossible dates, timestamps, prose and wrong shapes', () => {
+    for (const bad of [
+      '2026-02-31',
+      '2023-02-29',
+      '2026-13-01',
+      '2026-10-01T00:00:00Z',
+      '2026-2-3',
+      '3 days ago',
+      'October 1, 2026',
+      '',
+      '2026-10-01T00:00:00Z',
+    ]) {
+      expect(jobPostingSchema.safeParse(minimal({ postedDate: bad })).success, bad).toBe(false);
+    }
+  });
+
+  it('keeps the schema strict: an unknown date-ish property is rejected', () => {
+    expect(jobPostingSchema.safeParse(minimal({ postedDate: '2026-10-01', datePosted: '2026-10-01' })).success).toBe(
+      false,
+    );
+    expect(jobPostingSchema.safeParse(minimal({ postedAt: '2026-10-01' })).success).toBe(false);
+  });
+
+  it('createJobPosting carries an explicit date and never invents one', () => {
+    const withDate = createJobPosting(
+      { title: 'Dated', rawDescription: 'd', postedDate: '2026-10-01' },
+      () => CAPTURED_AT,
+      () => 'fixed',
+    );
+    expect(withDate.postedDate).toBe('2026-10-01');
+    const without = createJobPosting(
+      { title: 'Undated', rawDescription: 'd' },
+      () => CAPTURED_AT,
+      () => 'fixed-2',
+    );
+    expect(without.postedDate).toBeUndefined();
+  });
+
+  it('a cleared date field maps to absent (not to the capture time)', () => {
+    const cleared = createJobPosting(
+      {
+        title: 'Cleared',
+        rawDescription: 'd',
+        postedDate: postedDateFieldValue(''),
+      },
+      () => CAPTURED_AT,
+      () => 'fixed-3',
+    );
+    expect(cleared.postedDate).toBeUndefined();
+    expect(cleared.capturedAt).toBe(CAPTURED_AT); // provenance is separate
+    // What actually gets serialized for storage has no date key at all.
+    expect(JSON.parse(JSON.stringify(cleared))).not.toHaveProperty('postedDate');
+  });
+});
+
+describe('validatePostingDraft (create/edit form drafts)', () => {
+  const draft = {
+    title: 'Backend Engineer',
+    rawDescription: 'Build and maintain APIs.',
+    responsibilities: [],
+    requiredQualifications: [],
+    preferredQualifications: [],
+    skills: [],
+  };
+
+  it('validates a NEW draft without generating id/capturedAt errors', () => {
+    // Regression: validating the raw draft reported missing `id`/`capturedAt`,
+    // so the Options → Jobs create form could never save.
+    expect(validatePostingDraft(draft)).toEqual([]);
+    expect(validateJobPostingInput(draft).length).toBeGreaterThan(0);
+  });
+
+  it('keeps an edit’s own identity and reports a bad postedDate with its field path', () => {
+    expect(
+      validatePostingDraft({ ...draft, id: 'job-7', capturedAt: CAPTURED_AT, postedDate: '2026-10-01' }),
+    ).toEqual([]);
+    const issues = validatePostingDraft({ ...draft, postedDate: '2026-02-31' });
+    expect(issues.join(' ')).toMatch(/postedDate/);
   });
 });
 

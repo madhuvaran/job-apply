@@ -8,9 +8,18 @@
  *   timers, no background crawling, no cookies, no network.
  * - NARROW EXTRACTION: only job-related inputs are inspected — JSON-LD
  *   `JobPosting` structured data, `<title>`/`h1`/og: meta tags, a short
- *   allowlist of company/location selectors, and ONE description container
- *   (article / role=main / job-description-ish). The whole body is NEVER
- *   dumped, and unrelated page text (nav, footer, ads) is not collected.
+ *   allowlist of company/location selectors, elements declaring an `itemprop`
+ *   attribute (company/location/`datePosted` microdata), and ONE description
+ *   container (article / role=main / job-description-ish). The whole body is
+ *   NEVER dumped, and unrelated page text (nav, footer, ads) is not collected.
+ * - POSTING DATE (Prompt 23): the published date is taken ONLY from explicit
+ *   job metadata — JSON-LD `datePosted` and `itemprop="datePosted"` microdata —
+ *   as a strict ISO calendar date (a date-time's date part is used as written).
+ *   Prose, relative wording ("3 days ago"), impossible dates and unparseable
+ *   values stay ABSENT; conflicting explicit sources leave it absent and return
+ *   a fixed, content-free notice instead of silently picking one. It is never
+ *   derived from the capture time and the preview lets the user correct/clear
+ *   it before saving.
  * - UNTRUSTED INPUT: everything extracted is page-controlled. Messages are
  *   validated with zod on BOTH sides (`captureRequestSchema` in the content
  *   script, `validateCaptureResponse` in the popup). Size caps are enforced
@@ -28,6 +37,7 @@
  * "no job content" — use manual intake then.
  */
 import { z } from 'zod';
+import { extractIsoCalendarDate, postingDateSchema } from './job-dates';
 import {
   MAX_RAW_DESCRIPTION_CHARS,
   MAX_TEXT_FIELD_CHARS,
@@ -36,6 +46,13 @@ import {
 } from './job-posting';
 
 export const CAPTURE_REQUEST_TYPE = 'job-apply/capture-request';
+
+/**
+ * Fixed, privacy-safe note when two EXPLICIT page date sources disagree
+ * (Prompt 23). It contains no page content and never picks a winner.
+ */
+export const POSTING_DATE_CONFLICT_NOTICE =
+  'This page published more than one posting date and they disagree, so the posting date was left blank. Enter it manually if you know it.';
 
 /* ------------------------------------------------------------------ */
 /* Message schemas (validated on both sides)                           */
@@ -55,6 +72,15 @@ export const captureCandidateSchema = z
     location: z.string().trim().min(1).max(MAX_TEXT_FIELD_CHARS).optional(),
     descriptionText: z.string().max(MAX_RAW_DESCRIPTION_CHARS).default(''),
     descriptionTruncated: z.boolean().default(false),
+    /**
+     * The posting date the page explicitly published, as a real `YYYY-MM-DD`
+     * calendar date (Prompt 23). Absent whenever the page stated none, or the
+     * value was malformed/impossible/relative/conflicting — never guessed and
+     * never derived from the capture time.
+     */
+    postedDate: postingDateSchema.optional(),
+    /** Fixed literal only; explains a conflicting/missing date. No page text. */
+    postedDateNotice: z.string().min(1).max(300).optional(),
   })
   .strict();
 
@@ -189,6 +215,8 @@ interface JsonLdJob {
   company?: string;
   location?: string;
   description?: string;
+  /** Raw `datePosted` value(s) straight from the structured data (unparsed). */
+  datePosted?: string[];
 }
 
 function collectNodes(root: unknown, out: Record<string, unknown>[]): void {
@@ -250,11 +278,18 @@ export function readJobPostingJsonLd(doc: Document): JsonLdJob | undefined {
     const title = typeof job['headline'] === 'string' ? (job['headline'] as string) : typeof job['title'] === 'string' ? (job['title'] as string) : undefined;
     const description = typeof job['description'] === 'string' ? (job['description'] as string) : undefined;
 
+    // `datePosted` (schema.org) — raw strings only; parsed strictly later.
+    const rawDate = job['datePosted'];
+    const datePosted = (Array.isArray(rawDate) ? rawDate : [rawDate]).filter(
+      (v): v is string => typeof v === 'string' && v.trim().length > 0,
+    );
+
     return {
       title: title ? normalizeText(stripHtml(title)).slice(0, MAX_TITLE_CHARS) : undefined,
       company: company ? normalizeText(company).slice(0, MAX_TEXT_FIELD_CHARS) : undefined,
       location: location ? normalizeText(location).slice(0, MAX_TEXT_FIELD_CHARS) : undefined,
       description: description ? normalizeText(stripHtml(description)) : undefined,
+      ...(datePosted.length > 0 ? { datePosted } : {}),
     };
   }
   return undefined;
@@ -267,6 +302,64 @@ function metaContent(doc: Document, selectors: string[]): string | undefined {
     if (content) return content;
   }
   return undefined;
+}
+
+/**
+ * Explicit `datePosted` values from schema.org MICRODATA (Prompt 23): only
+ * elements that declare an `itemprop` attribute are examined, and only the
+ * `datePosted` property — the page body is never scanned and unrelated text is
+ * never read. The machine-readable `datetime`/`content` attribute wins; the
+ * element's own text is used only when it is a strict ISO date/date-time, so
+ * prose ("3 days ago", "Posted last week") can never pass the parser.
+ */
+export function readPostedDateMicrodata(doc: Document): string[] {
+  const values: string[] = [];
+  let elements: Element[] = [];
+  try {
+    elements = Array.from(doc.querySelectorAll('[itemprop]'));
+  } catch {
+    return values; // invalid selector on this engine — no dates, never a throw
+  }
+  for (const element of elements) {
+    const prop = (element.getAttribute('itemprop') ?? '').trim().toLowerCase();
+    if (prop !== 'dateposted') continue;
+    const candidates = [
+      element.getAttribute('datetime'),
+      element.getAttribute('content'),
+      element.textContent,
+    ];
+    for (const candidate of candidates) {
+      const iso = extractIsoCalendarDate(candidate);
+      if (iso !== undefined) {
+        values.push(iso);
+        break; // one explicit value per element
+      }
+    }
+  }
+  return values;
+}
+
+export interface PostedDateResolution {
+  /** The single explicitly published calendar date, when unambiguous. */
+  postedDate?: string;
+  /** Fixed ambiguity note; present only when sources contradict each other. */
+  postedDateNotice?: string;
+}
+
+/**
+ * Combine every EXPLICIT date source: none → absent; exactly one distinct
+ * calendar date → that date; more than one → absent PLUS the fixed ambiguity
+ * notice. A winner is never chosen and no source is preferred over another.
+ */
+export function resolvePostedDate(values: readonly (string | undefined)[]): PostedDateResolution {
+  const dates = new Set<string>();
+  for (const raw of values) {
+    const iso = extractIsoCalendarDate(raw);
+    if (iso !== undefined) dates.add(iso);
+  }
+  if (dates.size === 0) return {};
+  if (dates.size === 1) return { postedDate: [...dates][0] as string };
+  return { postedDateNotice: POSTING_DATE_CONFLICT_NOTICE };
 }
 
 /**
@@ -321,6 +414,13 @@ export function extractJobCandidate(doc: Document, pageUrl: string): CaptureOutc
       };
     }
 
+    // Published posting date (Prompt 23): only from explicit job metadata
+    // (JSON-LD `datePosted` + microdata `datePosted`), never from page prose.
+    const posted = resolvePostedDate([
+      ...(jsonLd?.datePosted ?? []),
+      ...readPostedDateMicrodata(doc),
+    ]);
+
     return {
       kind: 'ok',
       candidate: {
@@ -330,6 +430,8 @@ export function extractJobCandidate(doc: Document, pageUrl: string): CaptureOutc
         ...(location ? { location } : {}),
         descriptionText,
         descriptionTruncated,
+        ...(posted.postedDate ? { postedDate: posted.postedDate } : {}),
+        ...(posted.postedDateNotice ? { postedDateNotice: posted.postedDateNotice } : {}),
       },
     };
   } catch {

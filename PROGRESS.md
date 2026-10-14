@@ -1,5 +1,138 @@
 # PROGRESS
 
+## Done (2026-10-14, task 28 / Prompt 23: capture and display job posting dates)
+One focused feature: capture and display the ACTUAL posting date when a source
+explicitly publishes one. No prioritization dashboard, no expiry, no sorting by
+freshness, no new dependency, no new permission, no AI/network involvement.
+
+### Data model
+- **`src/lib/job-dates.ts`** (new, pure) — `postingDateSchema` (strict
+  `YYYY-MM-DD` + `isRealCalendarDate`, leap years included, rejecting 2026-02-31
+  / month 13 / wrong shapes), `extractIsoCalendarDate` (accepts a date-only value
+  or a strict ISO date-time and returns its calendar date **exactly as written**,
+  never time-zone shifted; rejects prose, "3 days ago", bare years, impossible
+  dates and trailing text), `isIsoDateTime`, `localCalendarDate`,
+  `formatPostingDate` (readable local format built from calendar parts, so the
+  displayed day always matches the stored day), `isFuturePostingDate`,
+  `describePostingDate` (+ `POSTING_DATE_UNKNOWN_LABEL`,
+  `FUTURE_POSTING_DATE_WARNING`) and `postedDateFieldValue` (blank → absent for
+  the preview/form).
+- **`src/lib/job-posting.ts`** — the strict `jobPostingSchema` gains **optional**
+  `postedDate` (real calendar date only). No schema-version bump: the field is
+  additive and optional, so existing records without it still validate and load
+  unchanged and no migration is required. Missing/invalid/ambiguous dates stay
+  absent — `capturedAt`/`updatedAt` are never substituted.
+
+### Capture (explicitly published dates only)
+- **`src/lib/capture.ts`** — the candidate/response schemas gain optional
+  `postedDate` + a fixed `postedDateNotice`. Two narrow, explicit job-metadata
+  sources, consistent with the existing architecture and never a body scan:
+  JSON-LD `JobPosting.datePosted` (string or array) and `itemprop="datePosted"`
+  microdata (only elements that declare an `itemprop` attribute are examined;
+  the machine-readable `datetime`/`content` value wins, and an element's own text
+  is used only when it is strict ISO). `resolvePostedDate` combines them: none →
+  absent, one distinct date → that date, **more than one → absent plus the fixed
+  content-free conflict notice** (a winner is never chosen). Prose, relative
+  wording, impossible dates and malformed values stay absent. The popup preview
+  shows the proposed date and lets you correct or clear it before saving.
+- **`src/lib/fixtures/job-jsonld.html`** — the JSON-LD fixture now publishes
+  `"datePosted": "2026-10-01"` so the main capture path exercises the feature.
+
+### UI
+- **`entrypoints/popup/App.tsx`** — capture preview gains an optional
+  `type="date"` posting-date field (prefilled from the capture, editable and
+  clearable) plus a hint explaining that a blank date is never the capture time,
+  and the conflict notice when two explicit sources disagreed.
+- **`entrypoints/options/JobsPanel.tsx`** — the create/edit form gains an
+  optional posting-date input with an explicit **Clear date** button; editing
+  preloads the saved date and preserves it while other fields change; a blank
+  value is stored as absent. **Fix (see defect below): the form now validates
+  through `validatePostingDraft`.**
+- **`entrypoints/options/PostingDateLabel.tsx`** (new, presentational) —
+  renders the saved date in a readable local format, **"Posting date unknown"**
+  when absent (never the capture time), and the fixed
+  **"Future posting date — verify"** warning for a date after today.
+- The list item also keeps its existing provenance line ("captured from page on
+  …"), which is explicitly capture metadata, not a freshness claim.
+
+### Defect found and fixed (in scope: the Jobs create/edit form)
+- `JobsPanel.onSave` validated the raw draft, which has no `id`/`capturedAt`,
+  against the full strict schema — so the manual **create** path always failed
+  with generated `id`/`capturedAt` issues and could never save a job. It now uses
+  the new `validatePostingDraft()` (job-posting.ts), which supplies documented
+  placeholders for a new posting and keeps an edit's own identity; the popup
+  capture save path uses the same helper (it previously inlined the placeholders).
+  A regression test pins that a new draft validates with no generated-field
+  errors while a bad `postedDate` is still reported with its field path.
+
+### Tests (+41; 711 → 752 total)
+- **`src/lib/job-dates.test.ts`** (new) — real leap days (2024/2000) vs
+  non-leap (2023/1900); impossible dates, wrong shapes, prose and relative
+  wording; date-only and ISO date-time extraction incl. offsets (`+02:00`,
+  `-05:00`) with no time-zone rollover; strict schema; readable formatting
+  (explicit locale) and invalid-input pass-through; local "today"; future-date
+  boundaries (before/on/after, year boundary, malformed); `unknown` label; the
+  preview/form → schema value mapping (corrected, cleared, malformed passed
+  through for the schema to report).
+- **`src/lib/job-dates-ui.test.ts`** (new) — the label renders
+  "Posting date unknown" with no timestamp substitution, the readable saved date,
+  the future warning (`role="status"`) and no warning for today/past.
+- **`src/lib/capture.test.ts`** — JSON-LD `datePosted` (date-only, date-time,
+  leap day), microdata `datetime`/`content`/strict-ISO text and case-insensitive
+  `itemprop`, agreement between sources, absent for malformed/relative/impossible
+  values, **conflict between sources and between microdata elements → absent +
+  fixed notice (no page text, no winner)**, no dates taken from prose/nav/footer/
+  description, `readPostedDateMicrodata` only reading `itemprop=datePosted`,
+  `resolvePostedDate` purity/dedupe, strict candidate schema (unknown property and
+  non-ISO date rejected), both directions of the boundary validation, preview
+  correction/clearing, and zero network calls.
+- **`src/lib/job-posting.test.ts`** — `postedDate` optional/absent by default,
+  leap day accepted, impossible dates/timestamps/prose rejected, strict rejection
+  of `datePosted`/`postedAt`, `createJobPosting` carries an explicit date and
+  never invents one, cleared → absent (serialized record has no key), and the
+  `validatePostingDraft` regression above.
+- **`src/lib/storage.test.ts`** — save → reload → edit (preserves the date) →
+  clear (key removed, `capturedAt` unchanged) and a **legacy record without
+  `postedDate` loading correctly**; a schema-invalid date is refused without
+  writing.
+
+### Commands run this task (exit statuses captured)
+- `npx vitest run` → **exit 0, 752/752 passed** (46 files; 711 baseline + 41 new)
+- `npm run compile` → **exit 0**
+- `npm run build` → **exit 0**; built manifest unchanged:
+  `permissions = ["storage", "activeTab", "scripting"]`, no `host_permissions`,
+  content-script matches still `*://*.google.com/*`
+
+### Verified vs unverified
+- **Verified:** jsdom/unit tests with synthetic fixtures and fake job data only.
+  **No real job site was accessed or submitted to**, and no real-browser
+  interaction (typing in the popup preview / date picker) was exercised — the
+  preview correction/clearing path is verified at the pure value-mapping level.
+- Not claimed: that any captured date is accurate unless the source explicitly
+  published it; nothing here verifies a third-party site's metadata quality.
+
+### Limitations / known issues
+- Only two explicit sources are read (JSON-LD `datePosted` and
+  `itemprop="datePosted"` microdata). A posting that states its date only as
+  prose ("Posted 3 weeks ago") or in a framework-specific JSON blob keeps an
+  unknown date — by design, nothing is guessed.
+- A `<time itemprop="datePosted">` whose machine-readable attribute is missing
+  and whose text is not strict ISO (e.g. "October 1, 2026") is treated as
+  unknown.
+- Dates are displayed in the local format via `toLocaleDateString`; the stored
+  value stays `YYYY-MM-DD` and the displayed day never shifts by time zone.
+- No expiry, notifications, freshness sorting or prioritization — the
+  prioritization dashboard is explicitly not part of this task.
+- `README.md` documents the feature; `docs/autofill-compatibility.md` was
+  deliberately left untouched (autofill is unrelated to this task).
+
+### Next
+- Prompt 24 was not started. The posting date groundwork is in place for a later
+  prioritization feature; remaining verification would be a real-browser pass
+  over the popup preview and the Options date input.
+
+---
+
 ## Done (2026-10-14, task 27 / Prompt 22: deterministic detection + field coverage)
 Focused autofill-detection task. No Workday adapter, no AI change, no new
 permission, no dependency, no manifest/content-script change. Detection stays

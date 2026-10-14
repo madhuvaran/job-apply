@@ -12,10 +12,15 @@
  *   normalized or summarized (only a length cap; empty/whitespace-only is
  *   rejected). Everything else is derived data the user can correct.
  * - UNKNOWN VALUES PRESERVED / NEVER INVENTED: company, location, URL, work
- *   arrangement, employment type, experience range and compensation are all
- *   OPTIONAL. When the posting does not state them (or states something
- *   outside our enums) they stay absent instead of being guessed; the raw
- *   text keeps whatever the poster wrote. Enum values are NOT coerced.
+ *   arrangement, employment type, experience range, compensation and the
+ *   published posting date are all OPTIONAL. When the posting does not state
+ *   them (or states something outside our enums) they stay absent instead of
+ *   being guessed; the raw text keeps whatever the poster wrote. Enum values
+ *   are NOT coerced.
+ * - POSTING DATE (Prompt 23): `postedDate` is a real `YYYY-MM-DD` calendar date
+ *   taken ONLY from an explicitly published value (`src/lib/job-dates.ts`). It
+ *   is never derived from `capturedAt`/`updatedAt` and stays absent when the
+ *   source is missing, invalid, ambiguous or unsupported.
  * - Size limits: raw description <= 100k chars; URL <= 2048 chars and
  *   http/https only; every list is capped (input size guard for storage
  *   quota and UI sanity).
@@ -27,6 +32,7 @@
  * truth for min/max-years validation, exported from src/lib/settings.ts).
  */
 import { z } from 'zod';
+import { postingDateSchema } from './job-dates';
 import {
   EMPLOYMENT_TYPES,
   ExperienceRangeSchema,
@@ -95,6 +101,12 @@ export const jobPostingSchema = z
     employmentType: z.enum(EMPLOYMENT_TYPES).optional(),
     /** Verbatim compensation as the posting states it; absent when not stated. */
     compensation: trimmedText(300).optional(),
+    /**
+     * The date the posting was PUBLISHED, when a source explicitly stated it
+     * (Prompt 23): a real `YYYY-MM-DD` calendar date — never a timestamp, and
+     * never substituted with `capturedAt`/`updatedAt`. Absent when unknown.
+     */
+    postedDate: postingDateSchema.optional(),
 
     /* --- provenance --- */
     /** 'manual' = typed into the options page; 'page-capture' = popup capture. */
@@ -114,6 +126,25 @@ export function validateJobPostingInput(value: unknown): string[] {
   return check.error.issues.map(
     (iss) => `${iss.path.join('.') || '(root)'}: ${iss.message}`,
   );
+}
+
+/**
+ * Validation placeholder for a create/edit draft, which has no identity yet.
+ * It is DISCARDED — `createJobPosting` mints the real id and timestamp — and
+ * exists only so the strict schema can validate the user-editable fields
+ * (previously the Options → Jobs create form validated the draft as-is and was
+ * therefore always rejected with generated `id`/`capturedAt` issues).
+ */
+export const DRAFT_TIMESTAMP = '1970-01-01T00:00:00.000Z';
+
+/**
+ * Validate a create/edit draft: `id`/`capturedAt` placeholders are supplied
+ * unless the draft already carries its own (the edit path passes the ORIGINAL
+ * id + capture timestamp so identity is preserved). Field paths are returned
+ * unchanged, so `postedDate: …` errors surface exactly like any other.
+ */
+export function validatePostingDraft(draft: Record<string, unknown>): string[] {
+  return validateJobPostingInput({ id: 'draft', capturedAt: DRAFT_TIMESTAMP, ...draft });
 }
 
 /* ------------------------------------------------------------------ */

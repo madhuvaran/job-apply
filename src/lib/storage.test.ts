@@ -494,6 +494,53 @@ describe('job postings persistence (v1)', () => {
     }
   });
 
+  it('persists, reloads, edits and clears postedDate; legacy records load unchanged', async () => {
+    // A NEW dated posting round-trips through a fresh load.
+    const dated = { ...posting('d1', 'Dated Role'), postedDate: '2026-10-01' };
+    expect(await upsertJobPosting(dated)).toBeNull();
+    let loaded = await loadJobPostings();
+    if (!loaded.ok) throw new Error('expected ok');
+    expect(loaded.data.postings.find((p) => p.id === 'd1')?.postedDate).toBe('2026-10-01');
+
+    // A record written BEFORE the field existed (no `postedDate` key) loads fine.
+    const legacy = posting('legacy', 'Legacy Role');
+    expect('postedDate' in legacy).toBe(false);
+    h.backing.set(STORAGE_KEYS.jobPostings, { schemaVersion: '1', postings: [legacy] });
+    loaded = await loadJobPostings();
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) {
+      expect(loaded.data.postings[0]?.postedDate).toBeUndefined();
+      expect(loaded.data.postings[0]?.title).toBe('Legacy Role');
+    }
+
+    // Editing an unrelated field preserves the date; clearing it removes the key.
+    const edited = { ...dated, title: 'Dated Role II' };
+    expect(await upsertJobPosting(edited)).toBeNull();
+    loaded = await loadJobPostings();
+    if (!loaded.ok) throw new Error('expected ok');
+    expect(loaded.data.postings.find((p) => p.id === 'd1')).toMatchObject({
+      title: 'Dated Role II',
+      postedDate: '2026-10-01',
+    });
+
+    const { postedDate: _dropped, ...cleared } = dated;
+    void _dropped;
+    expect(await upsertJobPosting({ ...cleared, title: 'Dated Role III' })).toBeNull();
+    loaded = await loadJobPostings();
+    if (!loaded.ok) throw new Error('expected ok');
+    const afterClear = loaded.data.postings.find((p) => p.id === 'd1');
+    expect(afterClear?.title).toBe('Dated Role III');
+    expect(afterClear?.postedDate).toBeUndefined();
+    expect(afterClear?.capturedAt).toBe('2026-10-13T10:00:00.000Z'); // never substituted
+  });
+
+  it('rejects a schema-invalid postedDate without writing anything', async () => {
+    const bad = { ...posting('bad-date', 'Bad Date'), postedDate: '2026-02-31' } as unknown as JobPosting;
+    const res = await upsertJobPosting(bad);
+    expect(res).toMatchObject({ ok: false, reason: 'malformed' });
+    expect(h.backing.has(STORAGE_KEYS.jobPostings)).toBe(false);
+  });
+
   it('upsert rejects a schema-invalid posting without writing', async () => {
     const bad = { ...posting('x', 'Valid'), originalUrl: 'not-a-url' } as JobPosting;
     const res = await upsertJobPosting(bad);

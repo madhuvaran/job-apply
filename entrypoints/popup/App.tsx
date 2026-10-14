@@ -34,9 +34,10 @@ import {
   type PlanReviewEntry,
 } from '../../src/lib/autofill';
 import type { Settings } from '../../src/lib/settings';
+import { postedDateFieldValue } from '../../src/lib/job-dates';
 import {
   createJobPosting,
-  validateJobPostingInput,
+  validatePostingDraft,
   MAX_RAW_DESCRIPTION_CHARS,
 } from '../../src/lib/job-posting';
 import {
@@ -65,6 +66,8 @@ interface FormState {
   location: string;
   url: string;
   description: string;
+  /** Captured/published posting date (`YYYY-MM-DD`) — '' when unknown. */
+  postedDate: string;
 }
 
 interface AfSummary {
@@ -73,7 +76,14 @@ interface AfSummary {
   total: number;
 }
 
-const EMPTY_FORM: FormState = { title: '', company: '', location: '', url: '', description: '' };
+const EMPTY_FORM: FormState = {
+  title: '',
+  company: '',
+  location: '',
+  url: '',
+  description: '',
+  postedDate: '',
+};
 
 /**
  * The AI mapping transport. There is deliberately NO endpoint/credential here:
@@ -114,6 +124,8 @@ function App() {
   const [stage, setStage] = useState<Stage>('idle');
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [truncated, setTruncated] = useState(false);
+  // Fixed, content-free note when the page published conflicting posting dates.
+  const [postedDateNotice, setPostedDateNotice] = useState<string | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
   const [errorText, setErrorText] = useState<string | null>(null);
   // Autofill review state (held in memory only; never stored).
@@ -201,8 +213,10 @@ function App() {
         location: c.location ?? '',
         url: c.url,
         description: c.descriptionText,
+        postedDate: c.postedDate ?? '',
       });
       setTruncated(c.descriptionTruncated);
+      setPostedDateNotice(c.postedDateNotice ?? null);
       setStage('preview');
     } catch {
       fail('Could not reach this tab. Re-open the popup and try again.');
@@ -394,8 +408,10 @@ function App() {
       originalUrl: form.url.trim() || undefined,
       rawDescription: form.description,
       source: 'page-capture' as const,
+      // Blank → ABSENT: never the capture time, never today.
+      postedDate: postedDateFieldValue(form.postedDate),
     };
-    const issues = validateJobPostingInput({ ...fields, id: 'x', capturedAt: new Date().toISOString() });
+    const issues = validatePostingDraft(fields);
     if (issues.length > 0) {
       setErrors(issues);
       return;
@@ -417,6 +433,7 @@ function App() {
   const onCancel = useCallback(() => {
     setForm(EMPTY_FORM);
     setTruncated(false);
+    setPostedDateNotice(null);
     setErrors([]);
     setStage('idle'); // nothing was written
   }, []);
@@ -617,6 +634,24 @@ function App() {
             <input value={form.url} onChange={(e) => set('url')(e.target.value)} />
           </label>
           <label>
+            Posting date (optional)
+            <input
+              type="date"
+              value={form.postedDate}
+              onChange={(e) => set('postedDate')(e.target.value)}
+            />
+          </label>
+          <p className="hint">
+            Filled in only when this page explicitly published a posting date. Correct it or clear
+            it if it is wrong — an inaccurate date is worse than none, and a blank date is never
+            replaced by the capture time.
+          </p>
+          {postedDateNotice !== null && (
+            <p className="warn" role="status">
+              {postedDateNotice}
+            </p>
+          )}
+          <label>
             Job description *
             <textarea
               rows={8}
@@ -650,6 +685,7 @@ function App() {
             onClick={() => {
               setForm(EMPTY_FORM);
               setTruncated(false);
+              setPostedDateNotice(null);
               setStage('idle');
             }}
           >

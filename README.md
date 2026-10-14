@@ -41,8 +41,13 @@ tabs; everything is stored **locally** via `chrome.storage.local`:
   intake: title, company, location, original URL, raw description (preserved
   verbatim), deterministic "Extract sections" for responsibilities /
   qualifications / skills, and optional work arrangement, employment type,
-  experience range and compensation exactly as posted. Unknown fields stay blank —
-  nothing is guessed. **Estimate match** selects a saved job and renders the
+  experience range, compensation exactly as posted and the optional **posting
+  date**. Unknown fields stay blank — nothing is guessed. The form's date field
+  can be set, corrected or cleared; a blank date is stored as **unknown**, never
+  filled in from the capture time, and saved jobs show a readable local date or
+  **"Posting date unknown"**. A saved date after today is flagged
+  **“Future posting date — verify”** rather than presented as fresh. Nothing
+expires and nothing is sorted by freshness (no prioritization feature exists). **Estimate match** selects a saved job and renders the
   deterministic match summary (see below): the score is labelled an estimate,
   confidence/completeness and assessable scoring weight appear as separate
   badges, and matched / partial / missing (confirmed) / unknown requirements
@@ -64,6 +69,18 @@ description from job-related page elements only, shows a preview for correction,
 and saves on your explicit confirmation. Cancel writes nothing. Unsupported
 pages (browser pages, PDFs) and permission denial fall back to manual intake.
 No scraping behind logins, no cookies, no background crawling.
+
+**Posting date (optional):** when the page *explicitly publishes* one, the
+capture reads it from narrow, trusted-in-context job metadata only — JSON-LD
+`JobPosting.datePosted` and `itemprop="datePosted"` microdata (the machine-
+readable `datetime`/`content` value, or an element whose text is a strict ISO
+date). A strict ISO date is required; a date-time contributes its calendar date
+**exactly as written** (no time-zone shifting). Prose, relative wording
+(“3 days ago”), impossible dates (2026-02-31) and unparseable values stay
+**absent** — the page body is never scanned for dates, and the capture time is
+never substituted. If two explicit sources **disagree**, no date is chosen: the
+field stays blank with a fixed, content-free notice and the preview lets you
+type or clear it before saving.
 
 **Best-effort capture targets**: pages exposing `JobPosting` structured data
 (JSON-LD) — e.g. Greenhouse, Lever, Workday, Indeed and LinkedIn job pages —
@@ -574,7 +591,10 @@ tab (Prompt 13), the deterministic autofill foundation (Prompt 14), its
 reliability/safety hardening (Prompt 15), Workday-style compatibility discovery
 with a synthetic fixture set and matrix (Prompt 16), the opt-in AI-assisted
 field-mapping layer (Prompt 17), the local tailored resume version history
-+ snapshot export (Prompt 19), and the ATS-friendly Word (.docx) resume export
-(Prompt 20).
-**Not yet built: a Workday adapter, live wiring of the AI provider endpoint, and
-the deeper application-form automation.**
++ snapshot export (Prompt 19), the ATS-friendly Word (.docx) resume export
+(Prompt 20), and optional **job posting-date** capture/display groundwork
+(Prompt 23 — an explicit published date only; no prioritization, expiry or
+freshness sorting yet).
+**Not yet built: a Workday adapter, live wiring of the AI provider endpoint, the
+deeper application-form automation, and the job-prioritization feature that this
+posting-date groundwork is for.**

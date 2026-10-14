@@ -24,9 +24,10 @@ import {
   createJobPosting,
   extractJobSections,
   MAX_RAW_DESCRIPTION_CHARS,
-  validateJobPostingInput,
+  validatePostingDraft,
   type JobPosting,
 } from '../../src/lib/job-posting';
+import { postedDateFieldValue } from '../../src/lib/job-dates';
 import {
   loadJobPostings,
   loadProfile,
@@ -44,6 +45,7 @@ import {
 } from '../../src/lib/settings';
 import type { Profile } from '../../src/lib/profile';
 import { Row, Section } from './ui';
+import PostingDateLabel from './PostingDateLabel';
 import MatchSummary from './MatchSummary';
 import ResumeExport from './ResumeExport';
 import ResumeHistory from './ResumeHistory';
@@ -64,6 +66,8 @@ interface FormState {
   minYears: string;
   maxYears: string;
   compensation: string;
+  /** `YYYY-MM-DD` from the date input, or '' for "unknown". */
+  postedDate: string;
 }
 
 const EMPTY_FORM: FormState = {
@@ -81,6 +85,7 @@ const EMPTY_FORM: FormState = {
   minYears: '',
   maxYears: '',
   compensation: '',
+  postedDate: '',
 };
 
 type LoadState = 'loading' | 'ready' | 'malformed' | 'unavailable';
@@ -197,6 +202,7 @@ export default function JobsPanel() {
       minYears: posting.experienceRange?.minYears?.toString() ?? '',
       maxYears: posting.experienceRange?.maxYears?.toString() ?? '',
       compensation: posting.compensation ?? '',
+      postedDate: posting.postedDate ?? '',
     });
     setEditingId(posting.id);
     setCreating(true);
@@ -244,10 +250,14 @@ export default function JobsPanel() {
       experienceRange:
         minYears !== undefined || maxYears !== undefined ? { minYears, maxYears } : undefined,
       compensation: form.compensation.trim() || undefined,
+      // Blank date → ABSENT (never the capture time, never today).
+      postedDate: postedDateFieldValue(form.postedDate),
       ...(original ? { updatedAt: nowIso } : {}),
     };
 
-    const issues = validateJobPostingInput(candidate);
+    // Validate the draft: identity placeholders are supplied for a NEW posting
+    // (createJobPosting mints the real id/timestamp); an edit keeps its own.
+    const issues = validatePostingDraft(candidate);
     if (issues.length > 0) {
       setErrors(issues);
       return;
@@ -355,6 +365,9 @@ export default function JobsPanel() {
                     {p.source === 'page-capture' ? 'captured from page' : 'manual entry'} on{' '}
                     {p.capturedAt.slice(0, 10)}
                   </span>
+                  <div className="hint">
+                    <PostingDateLabel postedDate={p.postedDate} />
+                  </div>
                   {p.originalUrl && (
                     <span className="hint">
                       <a href={p.originalUrl} target="_blank" rel="noreferrer noopener">{p.originalUrl}</a>
@@ -504,6 +517,21 @@ export default function JobsPanel() {
                 onChange={(e) => set('compensation', e.target.value)}
                 placeholder="Only if the posting states it — leave blank otherwise"
               />
+            </Row>
+            <Row label="Posting date">
+              <input
+                type="date"
+                value={form.postedDate}
+                onChange={(e) => set('postedDate', e.target.value)}
+                aria-label="Posting date (YYYY-MM-DD)"
+              />
+              <button type="button" onClick={() => set('postedDate', '')} disabled={form.postedDate === ''}>
+                Clear date
+              </button>
+              <span className="hint">
+                Only when the posting published one. Leave blank for unknown — a blank date is
+                never replaced by the capture time.
+              </span>
             </Row>
             {errors.length > 0 && (
               <div className="banner banner-error" role="alert">

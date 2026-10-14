@@ -8,7 +8,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   CAPTURE_REQUEST_TYPE,
   captureCandidateSchema,
@@ -16,9 +16,13 @@ import {
   captureResponseSchema,
   extractJobCandidate,
   handleCaptureRequest,
+  POSTING_DATE_CONFLICT_NOTICE,
+  readPostedDateMicrodata,
+  resolvePostedDate,
   validateCaptureResponse,
   type CaptureResponse,
 } from './capture';
+import { extractIsoCalendarDate, postedDateFieldValue } from './job-dates';
 import { MAX_RAW_DESCRIPTION_CHARS } from './job-posting';
 
 // Fixtures live in src/lib/fixtures; resolve from the vitest root (project root).
@@ -134,6 +138,13 @@ describe('extraction: JSON-LD job page fixture', () => {
     expect(captureCandidateSchema.safeParse(outcome.candidate).success).toBe(true);
   });
 
+  it('reads the published posting date from JSON-LD datePosted', () => {
+    expect(outcome.kind).toBe('ok');
+    if (outcome.kind !== 'ok') return;
+    expect(outcome.candidate.postedDate).toBe('2026-10-01');
+    expect(outcome.candidate.postedDateNotice).toBeUndefined();
+  });
+
   it('does not collect unrelated page content (nav/footer/main chrome)', () => {
     if (outcome.kind !== 'ok') throw new Error('expected ok');
     const text = outcome.candidate.descriptionText;
@@ -214,6 +225,216 @@ describe('never invents values', () => {
     if (outcome.kind !== 'ok') return;
     expect(outcome.candidate.company).toBeUndefined();
     expect(outcome.candidate.location).toBeUndefined();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Posting date capture (Prompt 23)                                    */
+/* ------------------------------------------------------------------ */
+
+const LONG_DESCRIPTION =
+  '<div id="job-description">You will build and ship features with the team, review code every day, and keep improving the product. This text is deliberately long enough to satisfy the capture heuristic.</div>';
+
+/** A dated job page: `head` carries structured data, the body a description. */
+const datedPage = (head: string): Document =>
+  new DOMParser().parseFromString(
+    `<html><head><title>Dated Role</title>${head}</head><body>${LONG_DESCRIPTION}</body></html>`,
+    'text/html',
+  );
+
+const jsonLdPage = (datePosted: unknown): Document =>
+  datedPage(
+    `<script type="application/ld+json">${JSON.stringify({
+      '@context': 'https://schema.org',
+      '@type': 'JobPosting',
+      headline: 'Dated Role',
+      datePosted,
+    })}</script>`,
+  );
+
+const postedDateOf = (page: Document): string | undefined => {
+  const outcome = extractJobCandidate(page, URL_UNDER_TEST);
+  if (outcome.kind !== 'ok') throw new Error('expected ok');
+  return outcome.candidate.postedDate;
+};
+
+const noticeOf = (page: Document): string | undefined => {
+  const outcome = extractJobCandidate(page, URL_UNDER_TEST);
+  if (outcome.kind !== 'ok') throw new Error('expected ok');
+  return outcome.candidate.postedDateNotice;
+};
+
+describe('posting date: explicit sources', () => {
+  it('reads JSON-LD datePosted as a calendar date (date-only and date-time)', () => {
+    expect(postedDateOf(jsonLdPage('2026-10-01'))).toBe('2026-10-01');
+    expect(postedDateOf(jsonLdPage('2026-10-01T08:15:00Z'))).toBe('2026-10-01');
+    expect(postedDateOf(jsonLdPage('2026-10-01T23:30:00.000+02:00'))).toBe('2026-10-01');
+    expect(postedDateOf(jsonLdPage('2024-02-29'))).toBe('2024-02-29'); // leap day
+  });
+
+  it('reads itemprop="datePosted" microdata (datetime/content, strict ISO text)', () => {
+    expect(postedDateOf(datedPage('<time itemprop="datePosted" datetime="2026-09-15">3 weeks ago</time>'))).toBe(
+      '2026-09-15',
+    );
+    expect(postedDateOf(datedPage('<meta itemprop="datePosted" content="2026-09-15" />'))).toBe('2026-09-15');
+    expect(postedDateOf(datedPage('<span itemprop="datePosted">2026-09-16</span>'))).toBe('2026-09-16');
+    // itemprop is matched case-insensitively (real-world markup varies).
+    expect(postedDateOf(datedPage('<span itemprop="dateposted">2026-09-17</span>'))).toBe('2026-09-17');
+  });
+
+  it('uses the same single date from both sources without a notice', () => {
+    const page = datedPage(
+      '<meta itemprop="datePosted" content="2026-10-01" />' +
+        '<script type="application/ld+json">{"@type":"JobPosting","headline":"Dated Role","datePosted":"2026-10-01T00:00:00Z"}</script>',
+    );
+    expect(postedDateOf(page)).toBe('2026-10-01');
+    expect(noticeOf(page)).toBeUndefined();
+  });
+
+  it('leaves malformed, impossible, relative and non-string datePosted values absent', () => {
+    for (const value of ['3 days ago', 'yesterday', '2026-02-31', '2026-13-01', 'October 1, 2026', '', 12345, null]) {
+      const page = jsonLdPage(value);
+      expect(postedDateOf(page), String(value)).toBeUndefined();
+      expect(noticeOf(page), String(value)).toBeUndefined();
+    }
+    // Prose in a machine-readable-looking element is still rejected.
+    expect(postedDateOf(datedPage('<time itemprop="datePosted">Posted last week</time>'))).toBeUndefined();
+  });
+
+  it('reports a conflict between explicit sources instead of picking one', () => {
+    const page = datedPage(
+      '<meta itemprop="datePosted" content="2026-10-05" />' +
+        '<script type="application/ld+json">{"@type":"JobPosting","headline":"Dated Role","datePosted":"2026-10-01"}</script>',
+    );
+    expect(postedDateOf(page)).toBeUndefined();
+    expect(noticeOf(page)).toBe(POSTING_DATE_CONFLICT_NOTICE);
+    // The notice is a fixed literal — no page content, no chosen winner.
+    expect(noticeOf(page)).not.toMatch(/2026-10-0/);
+  });
+
+  it('reports a conflict between two microdata elements too', () => {
+    const page = datedPage(
+      '<meta itemprop="datePosted" content="2026-10-01" /><span itemprop="datePosted">2026-10-09</span>',
+    );
+    expect(postedDateOf(page)).toBeUndefined();
+    expect(noticeOf(page)).toBe(POSTING_DATE_CONFLICT_NOTICE);
+  });
+});
+
+describe('posting date: narrow scanning only', () => {
+  it('never reads dates from page prose, nav, footer or the description', () => {
+    const page = new DOMParser().parseFromString(
+      `<html><head><title>Dated Role</title></head><body>
+        <nav>Posted 2020-01-01 · Updated 2019-05-05</nav>
+        <div id="job-description">
+          <p>Apply now. Posted on 2026-10-01 and refreshed 2026-10-02.</p>
+          ${LONG_DESCRIPTION}
+        </div>
+        <footer>Last indexed 2018-08-08</footer>
+      </body></html>`,
+      'text/html',
+    );
+    expect(postedDateOf(page)).toBeUndefined();
+    expect(noticeOf(page)).toBeUndefined();
+  });
+
+  it('readPostedDateMicrodata reads only itemprop=datePosted elements', () => {
+    const page = new DOMParser().parseFromString(
+      `<html><body>
+        <span itemprop="datePosted" datetime="2026-09-15"></span>
+        <span itemprop="dateModified">2026-09-16</span>
+        <time datetime="2026-09-17"></time>
+        <p>2026-09-18</p>
+      </body></html>`,
+      'text/html',
+    );
+    expect(readPostedDateMicrodata(page)).toEqual(['2026-09-15']);
+  });
+
+  it('resolvePostedDate is pure, dedupes and never picks between distinct dates', () => {
+    expect(resolvePostedDate([])).toEqual({});
+    expect(resolvePostedDate([undefined, ''])).toEqual({});
+    expect(resolvePostedDate(['2026-10-01', '2026-10-01T00:00:00Z'])).toEqual({
+      postedDate: '2026-10-01',
+    });
+    expect(resolvePostedDate(['2026-10-01', '2026-10-02'])).toEqual({
+      postedDateNotice: POSTING_DATE_CONFLICT_NOTICE,
+    });
+    // Invalid values are ignored (they are not competing dates).
+    expect(resolvePostedDate(['3 days ago', '2026-10-01'])).toEqual({ postedDate: '2026-10-01' });
+  });
+});
+
+describe('posting date: boundary validation + preview correction', () => {
+  it('keeps the candidate schema strict about the date field', () => {
+    const base = { url: URL_UNDER_TEST, title: 'Dated Role' };
+    expect(captureCandidateSchema.safeParse({ ...base, postedDate: '2026-10-01' }).success).toBe(true);
+    expect(
+      captureCandidateSchema.safeParse({ ...base, postedDateNotice: POSTING_DATE_CONFLICT_NOTICE }).success,
+    ).toBe(true);
+    for (const bad of ['2026-10-01T00:00:00Z', '2026-2-3', '2026-02-31', '3 days ago', '']) {
+      expect(captureCandidateSchema.safeParse({ ...base, postedDate: bad }).success, bad).toBe(false);
+    }
+    // Strict: an unexpected property is still rejected.
+    expect(captureCandidateSchema.safeParse({ ...base, postedDate: '2026-10-01', date: 'x' }).success).toBe(
+      false,
+    );
+  });
+
+  it('validates both directions of the message boundary with the date included', () => {
+    const response = handleCaptureRequest(
+      { type: CAPTURE_REQUEST_TYPE },
+      jsonLdPage('2026-10-01'),
+      URL_UNDER_TEST,
+    );
+    expect(captureResponseSchema.safeParse(response).success).toBe(true);
+    const validated = validateCaptureResponse(response);
+    expect(validated.ok).toBe(true);
+    if (validated.ok && validated.value.kind === 'ok') {
+      expect(validated.value.candidate.postedDate).toBe('2026-10-01');
+    }
+    // A tampered response with a non-ISO date is rejected (strict on both sides).
+    expect(
+      validateCaptureResponse({
+        kind: 'ok',
+        candidate: { url: URL_UNDER_TEST, title: 'T', postedDate: '3 days ago' },
+      }).ok,
+    ).toBe(false);
+  });
+
+  it('maps a corrected date through and a cleared date to ABSENT (never the capture time)', () => {
+    // The preview starts from the captured value…
+    const captured = extractJobCandidate(jsonLdPage('2026-10-01'), URL_UNDER_TEST);
+    if (captured.kind !== 'ok') throw new Error('expected ok');
+    expect(captured.candidate.postedDate).toBe('2026-10-01');
+    // …the user corrects or clears it, and the form value is what the schema sees.
+    expect(postedDateFieldValue('2026-10-05')).toBe('2026-10-05'); // corrected
+    expect(postedDateFieldValue('')).toBeUndefined(); // cleared
+    const saved = captureCandidateSchema.parse({
+      url: URL_UNDER_TEST,
+      title: 'Dated Role',
+      postedDate: postedDateFieldValue(''),
+    });
+    expect(saved.postedDate).toBeUndefined(); // absent, not back-filled
+    expect(JSON.parse(JSON.stringify(saved))).not.toHaveProperty('postedDate');
+  });
+
+  it('makes no network call and reads no unrelated page text while capturing dates', async () => {
+    const fetchSpy = vi.fn();
+    const original = globalThis.fetch;
+    Object.assign(globalThis, { fetch: fetchSpy });
+    try {
+      const page = datedPage(
+        '<meta itemprop="datePosted" content="2026-10-01" /><nav>NAV-NOISE 2026-10-09</nav>',
+      );
+      expect(postedDateOf(page)).toBe('2026-10-01');
+      const response = handleCaptureRequest({ type: CAPTURE_REQUEST_TYPE }, page, URL_UNDER_TEST);
+      expect(JSON.stringify(response)).not.toContain('NAV-NOISE');
+      expect(extractIsoCalendarDate('2026-10-01')).toBe('2026-10-01');
+    } finally {
+      Object.assign(globalThis, { fetch: original });
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 
