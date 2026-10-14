@@ -1,5 +1,79 @@
 # PROGRESS
 
+## Done (2026-10-14, task 23 / Prompt 19 follow-up: real-browser verification of the resume-history UI)
+Executed (not merely documented) an automated **real-browser** verification of
+Prompt 19's UI against a live `chrome.storage.local`, using a throwaway harness
+kept OUTSIDE the repository. **No repository dependency was added; no Prompt 19
+source changed; repo change = this file only.**
+- **Method.** `playwright-core` (installed only in a temp dir, never committed)
+  driving Playwright's **bundled Chromium** (`chromium-1234`, under
+  `%LOCALAPPDATA%\ms-playwright\...\chrome.exe`) via `launchPersistentContext`
+  with `--load-extension` / `--disable-extensions-except` pointed at the built
+  `.output/chrome-mv3`. Ran **headless** — no headful fallback was needed. The
+  system Chrome (155.0.8059.40) cannot be used for this: Chrome ≥137 removed
+  `--load-extension`, so only bundled Chromium can side-load an unpacked
+  extension. The extension loaded, its MV3 service worker registered
+  (`extId=dfikbkpbilhklcdajlceobmpgcalkpgb`), and the options page rendered.
+- **Result: 22/22 checks PASS** — real `chrome.storage.local`, real PDF downloads
+  captured through the browser's own download event, and PDF text extracted with
+  the same zlib + `Tj` technique as `src/lib/resume/pdf/test-support.ts`:
+  - **Save** writes the dedicated key `job-resume-history.v1`; the entry carries
+    a generated `id`, `schemaVersion` 1, `jobId`/`jobTitle`/`company` copied from
+    the saved job, `status: saved`, an ISO `createdAt`, and the
+    `tailoredResumeSchema` snapshot.
+  - Save writes **only** the history key: a full storage diff before/after the
+    click yielded `changedKeys=["job-resume-history.v1"]`, with profile/jobs
+    byte-identical and no `job-applications.v1` created.
+  - The save button flips to disabled **"Version saved"** with a notice; the
+    history row shows title / company / `Saved <date>` / status; the version
+    **persists across an options-page reload**.
+  - **Open** shows count-only details (`2 skills · 1 experience · 0 projects …`)
+    and leaks no resume body text into the DOM.
+  - **Export PDF** downloads a real `%PDF-` file (2,539 bytes) whose extracted
+    text contains the stored snapshot's summary.
+  - After editing the profile, export still renders the **ORIGINAL** snapshot and
+    NOT the new summary; export also succeeds with the **profile key absent**
+    (proves no re-tailoring and no profile read).
+  - Two versions (two jobs) → the two-step delete removes **only** the selected
+    version; the confirmation gate appears while storage is unchanged and
+    **Cancel writes nothing**; the list updates.
+  - An orphaned `jobId` keeps the version, flags it `data-orphaned="true"`
+    ("…no longer saved"), and still exports.
+  - Malformed history shows the banner and is **not overwritten** (the raw
+    `"NOT-A-RECORD"` value was still present); the explicit **Discard** replaces
+    it with an empty valid record.
+  - At the documented 200-version cap, a save is **refused** with the fixed
+    message and nothing is deleted (still 200 versions).
+- **Observation (benign, not a defect):** the options page does **not** rewrite
+  the profile/jobs keys on load. An early raw `JSON.stringify` comparison
+  differed only by **object key ordering after the `chrome.storage` round-trip**;
+  a canonical key-sorted comparison showed no difference and a
+  storage-vs-storage diff before/after the save was byte-identical. Recorded so
+  the artifact is not mistaken for a storage write.
+
+### Commands run this task (exit statuses captured inline)
+- real-browser harness: `node verify.mjs <ext> <chromium> headless <out>` →
+  **22/22 PASS** (`%LOCALAPPDATA%\Temp\p19-verify\out\results.json`)
+- `npx vitest run` → **exit 0, 634/634 passed** (40 files)
+- `npm run compile` → **exit 0**
+- `npm run build` → **exit 0**
+
+### Limitations / still unverified
+- Verified on **Chromium only, headless** — not Chrome-stable (which cannot
+  CLI-side-load extensions at ≥137) and not a human-driven manual session.
+- The download was captured via the browser's download event and saved to disk by
+  the harness; OS-level "Save as"/Downloads-folder placement and the browser's
+  download UI were not exercised.
+- The malformed-history and 200-cap paths were reached by injecting storage
+  states (not reachable through normal UI) — intentional.
+- No sync storage, cross-device, multi-tab live-update, or accessibility/keyboard
+  pass was performed.
+
+### Next
+- Unchanged: Prompt 20 was explicitly out of scope for this verification.
+
+---
+
 ## Done (2026-10-13, task 22 / Prompt 19 follow-up: git audit & generated-artifact cleanup)
 Verification-only audit of the GitHub `main` state after Prompt 19, plus a
 narrow cleanup. No Prompt 19 source or behavior changed; no new feature.
