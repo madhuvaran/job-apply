@@ -1,5 +1,86 @@
 # PROGRESS
 
+## Done (2026-10-14, task 30 / Prompt 25: harden prioritization validation)
+Focused robustness fix for the Prompt 24 module. No new feature, no category-rule
+change, no matching-algorithm/application-tracking/UI-design/manifest change, no
+new dependency or permission.
+
+### Semantic validation now reuses the domain schemas — `src/lib/prioritization/schemas.ts`
+- `today` and `freshness.postedDate` use the existing `postingDateSchema`
+  (real `YYYY-MM-DD`, leap years included; impossible/malformed values such as
+  `2026-02-31`, `2026-13-01`, `2023-02-29`, `2026-1-1`, `10/10/2026` rejected).
+- `application.applicationDate` uses the existing `applicationDateSchema`.
+- `originalUrl` uses the existing `postingUrlSchema` (http(s) only).
+- `notes` cap raised 6 → 10 (up to 8 fixed fail-closed notes can now occur);
+  every object stays `.strict()` and no parsing logic is duplicated.
+- Two new match states: `threshold-mismatch` and `duplicate-input`. This is an
+  enum extension — results that validated before still validate, and the UI
+  renders `match.label` generically, so no UI change was needed.
+
+### Threshold consistency fails closed
+- New pure `thresholdIsConsistent(result, configured)` mirrors the matcher's
+  documented mapping (`buildThreshold` in `src/lib/matching/estimate.ts`):
+  `configured` must equal the supplied minimum, `filtering === (minimum > 0)`,
+  minimum 0 → decision `disabled` with `meets` null, positive minimum over
+  insufficient data → decision `insufficient-data` with `meets` false, and a
+  score → `meets === (score >= minimum)` with decision `pass`|`below`.
+- A validated result that contradicts the supplied current threshold (different
+  minimum, different filtering mode, or an internally incoherent decision) is
+  re-labelled `threshold-mismatch`: no score, no threshold, no confidence →
+  `needs-review`, unless the higher-precedence `already-applied` rule applies.
+  The supplied score/threshold is never recalculated or rewritten.
+- Settings unavailable → the match signal stays `unavailable` (no comparison is
+  attempted, no mismatch is invented).
+- Threshold zero keeps its documented meaning: filtering disabled, any usable
+  score qualifies, insufficient data still never does.
+
+### Duplicate match inputs fail closed
+- At most ONE entry per `jobId` is trusted. A second entry — identical,
+  conflicting, or payload-less — makes that job's match signal
+  `duplicate-input` → `needs-review` with a fixed reason and note. There is no
+  last-wins behaviour, and shuffling duplicates (in either order) cannot change
+  the classification or the score.
+- New fixed notes `NOTE_THRESHOLD_MISMATCH` / `NOTE_DUPLICATE_MATCH_INPUT` and
+  new reasons for both states; suppliers' input objects are never mutated.
+
+### Tests
+- `prioritize.test.ts` 71 → **117 tests** (+46): semantic date/URL rejection
+  (impossible, malformed and leap-day values; `javascript:`, `ftp:`, `data:`,
+  bare-host and empty URLs; null and valid values accepted; strict objects kept)
+  while valid `prioritizeJobs()` output still validates; threshold consistency
+  (another minimum, filtering disabled/enabled, internally incoherent decision,
+  fixed reason, unchanged `already-applied` precedence, settings-unavailable
+  path, real-matcher results at minimum 0/60/100 never misflagged, a real result
+  computed under an older minimum now flagged, insufficient data unusable at 0
+  and 60); duplicate inputs (identical, conflicting, payload-less duplicates,
+  order independence, other jobs unaffected, fixed note/reason, no mutation).
+  Two pre-existing synthetic fixtures were made matcher-consistent (a 0 minimum
+  emits `disabled`, and scores below the minimum emit `below`) — they had been
+  relying on the very incoherence this task removes.
+- `priority-ui.test.ts` unchanged (11) — the new labels render through the
+  existing generic `match.label` pill.
+
+### Commands run this task (exit statuses captured inline)
+- `npx vitest run` → **exit 0, 880/880 passed** (48 files; 834 before + 46 new)
+- `npm run compile` (tsc --noEmit) → **exit 0**
+- `npm run build` (wxt build, chrome-mv3) → **exit 0** (manifest unchanged:
+  `storage`, `activeTab`, `scripting`; no host permissions)
+
+### Limitations / known issues
+- Threshold consistency is a comparison against the CURRENT settings, not a
+  re-verification of the estimate: a result computed under a different minimum
+  is simply not trusted (the panel recomputes the estimate on load, so this only
+  affects externally supplied results).
+- The duplicate policy is deliberately blunt: any second entry for the same job
+  id makes that signal unusable, even when the two entries are identical.
+- Still verified at unit + `react-dom/server` level only (no real job site, no
+  real-browser pass), and the priority view remains a review order over saved
+  data with no availability/applicant-count/probability claims.
+
+### Next
+- Prompt 26 (not started — this task stops here).
+
+---
 ## Done (2026-10-14, task 29 / Prompt 24: freshness-aware job prioritization + priority shortlist)
 One focused, local feature: turn ALREADY-SAVED data (saved jobs, published
 posting dates, deterministic match estimates, the application log) into a review

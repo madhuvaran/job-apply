@@ -77,16 +77,27 @@ interface MatchOptions {
   meets?: boolean | null;
 }
 
-/** A valid, synthetic already-computed match result (never recomputed here). */
+/**
+ * A valid, synthetic already-computed match result (never recomputed here).
+ * The threshold block DEFAULTS to exactly what the real matcher emits for the
+ * given score/minimum (see `buildThreshold` in `src/lib/matching/estimate.ts`),
+ * so a fixture only contradicts the current threshold when a test explicitly
+ * overrides `configured`/`filtering`/`decision`/`meets`.
+ */
 function makeMatch(options: MatchOptions = {}): JobMatchResult {
-  const {
-    outcome = 'score',
-    score = 80,
-    configured = 60,
-    filtering = true,
-    decision = 'pass',
-    meets = true,
-  } = options;
+  const { outcome = 'score', score = 80, configured = 60 } = options;
+  const derivedMeets = outcome === 'score' ? score >= configured : false;
+  const filtering = options.filtering ?? configured > 0;
+  const decision =
+    options.decision ??
+    (configured === 0
+      ? 'disabled'
+      : outcome === 'insufficient-data'
+        ? 'insufficient-data'
+        : derivedMeets
+          ? 'pass'
+          : 'below');
+  const meets = options.meets !== undefined ? options.meets : configured === 0 ? null : derivedMeets;
   return matchResultSchema.parse({
     schemaVersion: '1',
     estimate:
@@ -499,12 +510,15 @@ describe('match threshold boundaries', () => {
       run({
         jobs: [makeJob({ id: 'job-a', postedDate: TODAY })],
         matches: [
-          { jobId: 'job-a', result: makeMatch({ outcome: 'insufficient-data', configured: 0, filtering: false, decision: 'insufficient-data', meets: null }) },
+          // The matcher emits `disabled` for a 0 minimum regardless of the
+          // estimate outcome; insufficient data still never qualifies.
+          { jobId: 'job-a', result: makeMatch({ outcome: 'insufficient-data', configured: 0, filtering: false, decision: 'disabled', meets: null }) },
         ],
         minMatchThreshold: 0,
       }),
       'job-a',
     );
+    expect(entry.match.state).toBe('insufficient-data');
     expect(entry.match.meetsThreshold).toBe(false);
     expect(entry.category).toBe('needs-review');
   });
@@ -620,7 +634,7 @@ describe('stable ordering', () => {
       ],
       matches: [
         { jobId: 'job-unknown', result: makeMatch({ score: 99 }) },
-        { jobId: 'job-old', result: makeMatch({ score: 50 }) },
+        { jobId: 'job-old', result: makeMatch({ score: 62 }) },
         { jobId: 'job-mid-a', result: makeMatch({ score: 70 }) },
         { jobId: 'job-mid-b', result: makeMatch({ score: 90 }) },
         { jobId: 'job-newest', result: makeMatch({ score: 70 }) },
@@ -666,21 +680,21 @@ describe('stable ordering', () => {
         }),
         jobId,
       );
-    const known = entry('job-known', '2026-09-01', 50);
+    const known = entry('job-known', '2026-09-01', 70);
     const unknown = entry('job-unknown', null, 99);
     expect(comparePriorityEntries(known, unknown)).toBeLessThan(0);
     expect(comparePriorityEntries(unknown, known)).toBeGreaterThan(0);
 
-    const newer = entry('job-newer', '2026-09-20', 10);
+    const newer = entry('job-newer', '2026-09-20', 61);
     expect(comparePriorityEntries(newer, known)).toBeLessThan(0);
 
     const high = entry('job-high', null, 90);
-    const low = entry('job-low', null, 20);
+    const low = entry('job-low', null, 65);
     expect(comparePriorityEntries(high, low)).toBeLessThan(0);
     expect(comparePriorityEntries(low, high)).toBeGreaterThan(0);
 
-    const a = entry('job-a', null, 50);
-    const b = entry('job-b', null, 50);
+    const a = entry('job-a', null, 70);
+    const b = entry('job-b', null, 70);
     expect(comparePriorityEntries(a, b)).toBeLessThan(0);
     expect(comparePriorityEntries(b, a)).toBeGreaterThan(0);
     expect(comparePriorityEntries(a, a)).toBe(0);
@@ -1025,6 +1039,351 @@ describe('determinism and purity', () => {
       expect(source).not.toMatch(/Date\.now\(|new Date\(/);
       expect(source).not.toMatch(/chrome\.|browser\./);
     }
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Semantic validation of result dates and URLs (Prompt 25)            */
+/* ------------------------------------------------------------------ */
+
+/** A valid result carrying a posted date, an application date AND a URL. */
+function richResult(): PrioritizationResult {
+  return run({
+    jobs: [makeJob({ id: 'job-a', postedDate: TODAY, originalUrl: 'https://example.com/jobs/1' })],
+    matches: [{ jobId: 'job-a', result: makeMatch({ score: 80 }) }],
+    applications: [makeApplication({ jobId: 'job-a', status: 'interview', applicationDate: '2026-10-02' })],
+  });
+}
+
+/** Deep clone + mutate every job entry (validation only — never persisted). */
+function mutateEntries(
+  result: PrioritizationResult,
+  mutate: (entry: Record<string, unknown>) => void,
+): unknown {
+  const clone = JSON.parse(JSON.stringify(result)) as {
+    groups: { jobs: Record<string, unknown>[] }[];
+  };
+  for (const group of clone.groups) for (const job of group.jobs) mutate(job);
+  return clone;
+}
+
+function freshnessOf(entry: Record<string, unknown>): Record<string, unknown> {
+  return entry['freshness'] as Record<string, unknown>;
+}
+
+function applicationOf(entry: Record<string, unknown>): Record<string, unknown> {
+  return entry['application'] as Record<string, unknown>;
+}
+
+describe('result validation reuses the domain date/URL schemas', () => {
+  it('accepts the valid result prioritizeJobs() produced (date, application date, URL)', () => {
+    const result = richResult();
+    expect(prioritizationResultSchema.safeParse(result).success).toBe(true);
+    expect(validatePrioritizationResult(result).ok).toBe(true);
+    expect(entryFor(result, 'job-a').freshness.postedDate).toBe(TODAY);
+    expect(entryFor(result, 'job-a').application.applicationDate).toBe('2026-10-02');
+    expect(entryFor(result, 'job-a').originalUrl).toBe('https://example.com/jobs/1');
+  });
+
+  it.each(['2026-02-31', '2026-13-01', '2023-02-29', '2026-10-1', '10/10/2026', 'today', ''])(
+    'rejects an impossible or malformed today value (%s)',
+    (today) => {
+      const validation = validatePrioritizationResult({ ...richResult(), today });
+      expect(validation.ok).toBe(false);
+      if (!validation.ok) expect(validation.issues.join(' ')).toContain('today');
+    },
+  );
+
+  it('accepts a real leap-day today value', () => {
+    expect(validatePrioritizationResult({ ...richResult(), today: '2024-02-29' }).ok).toBe(true);
+  });
+
+  it.each(['2026-02-31', '2023-02-29', '2026-1-1', 'yesterday', 'Posted today', '']) (
+    'rejects an impossible or malformed freshness.postedDate (%s)',
+    (postedDate) => {
+      const validation = validatePrioritizationResult(
+        mutateEntries(richResult(), (entry) => {
+          freshnessOf(entry)['postedDate'] = postedDate;
+        }),
+      );
+      expect(validation.ok).toBe(false);
+    },
+  );
+
+  it('accepts null and a real date for freshness.postedDate', () => {
+    expect(validatePrioritizationResult(mutateEntries(richResult(), (e) => { freshnessOf(e)['postedDate'] = null; })).ok).toBe(true);
+    expect(validatePrioritizationResult(mutateEntries(richResult(), (e) => { freshnessOf(e)['postedDate'] = '2024-02-29'; })).ok).toBe(true);
+  });
+
+  it.each(['2026-02-31', '2026-13-01', '2026-10-1', 'n/a', '']) (
+    'rejects an impossible or malformed application.applicationDate (%s)',
+    (applicationDate) => {
+      const validation = validatePrioritizationResult(
+        mutateEntries(richResult(), (entry) => {
+          applicationOf(entry)['applicationDate'] = applicationDate;
+        }),
+      );
+      expect(validation.ok).toBe(false);
+    },
+  );
+
+  it('accepts null and a real date for application.applicationDate', () => {
+    expect(validatePrioritizationResult(mutateEntries(richResult(), (e) => { applicationOf(e)['applicationDate'] = null; })).ok).toBe(true);
+    expect(validatePrioritizationResult(mutateEntries(richResult(), (e) => { applicationOf(e)['applicationDate'] = '2026-02-29'; })).ok).toBe(false);
+  });
+
+  it.each(['javascript:alert(1)', 'ftp://example.com/job', 'data:text/html,x', 'not a url', 'http://', 'example.com/job']) (
+    'rejects an unsafe or malformed originalUrl (%s)',
+    (originalUrl) => {
+      const validation = validatePrioritizationResult(
+        mutateEntries(richResult(), (entry) => {
+          entry['originalUrl'] = originalUrl;
+        }),
+      );
+      expect(validation.ok).toBe(false);
+    },
+  );
+
+  it('accepts null and http(s) URLs for originalUrl', () => {
+    expect(validatePrioritizationResult(mutateEntries(richResult(), (e) => { e['originalUrl'] = null; })).ok).toBe(true);
+    expect(validatePrioritizationResult(mutateEntries(richResult(), (e) => { e['originalUrl'] = 'http://example.com/job'; })).ok).toBe(true);
+    expect(validatePrioritizationResult(mutateEntries(richResult(), (e) => { e['originalUrl'] = 'https://example.com/job?q=1#f'; })).ok).toBe(true);
+  });
+
+  it('keeps strict validation (extra properties are still rejected)', () => {
+    expect(validatePrioritizationResult(mutateEntries(richResult(), (e) => { e['extra'] = 1; })).ok).toBe(false);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Threshold consistency (Prompt 25)                                   */
+/* ------------------------------------------------------------------ */
+
+describe('threshold consistency fails closed', () => {
+  it('still uses a result whose threshold matches the current settings', () => {
+    const entry = entryFor(
+      run({
+        jobs: [makeJob({ id: 'job-a', postedDate: TODAY })],
+        matches: [{ jobId: 'job-a', result: makeMatch({ score: 80, configured: 60 }) }],
+        minMatchThreshold: 60,
+      }),
+      'job-a',
+    );
+    expect(entry.match.state).toBe('score');
+    expect(entry.match.score).toBe(80);
+    expect(entry.category).toBe('apply-first');
+  });
+
+  it.each([
+    ['another minimum', { configured: 55 }, 60],
+    ['filtering disabled', { configured: 0, filtering: false, meets: null, decision: 'disabled' as const }, 60],
+    ['filtering enabled', { configured: 60, filtering: true }, 0],
+  ])('treats a result computed against %s as unusable', (_label, patch, minMatchThreshold) => {
+    const result = run({
+      jobs: [makeJob({ id: 'job-a', postedDate: TODAY })],
+      matches: [{ jobId: 'job-a', result: makeMatch({ score: 80, ...patch }) }],
+      minMatchThreshold,
+    });
+    const entry = entryFor(result, 'job-a');
+    expect(entry.match.state).toBe('threshold-mismatch');
+    expect(entry.match.score).toBeNull();
+    expect(entry.match.meetsThreshold).toBeNull();
+    expect(entry.category).toBe('needs-review');
+    expect(result.notes.join(' ')).toContain('different minimum threshold');
+  });
+
+  it('rejects a result whose own decision disagrees with its threshold block', () => {
+    const entry = entryFor(
+      run({
+        jobs: [makeJob({ id: 'job-a', postedDate: TODAY })],
+        matches: [{ jobId: 'job-a', result: makeMatch({ score: 80, configured: 60, decision: 'below', meets: false }) }],
+        minMatchThreshold: 60,
+      }),
+      'job-a',
+    );
+    expect(entry.match.state).toBe('threshold-mismatch');
+    expect(entry.category).toBe('needs-review');
+  });
+
+  it('explains the mismatch with a fixed, privacy-safe reason', () => {
+    const entry = entryFor(
+      run({
+        jobs: [makeJob({ id: 'job-a', postedDate: TODAY })],
+        matches: [{ jobId: 'job-a', result: makeMatch({ score: 90, configured: 70 }) }],
+        minMatchThreshold: 60,
+      }),
+      'job-a',
+    );
+    expect(entry.reasons[0]).toContain('different minimum threshold');
+    expect(entry.match.confidenceLevel).toBeNull();
+  });
+
+  it('never misclassifies a result generated by the real matcher at the same minimum', () => {
+    const profile = fakeProfile();
+    const job = makeJob({
+      id: 'job-a',
+      postedDate: TODAY,
+      skills: ['TypeScript'],
+      requiredQualifications: ['TypeScript'],
+    });
+    for (const threshold of [0, 60, 100]) {
+      const settings = fakeSettings({ minMatchThreshold: threshold });
+      const outcome = calculateJobMatch(profile, job, settings);
+      const result = run({
+        jobs: [job],
+        matches: [{ jobId: 'job-a', result: outcome }],
+        minMatchThreshold: threshold,
+      });
+      const entry = entryFor(result, 'job-a');
+      expect(entry.match.state).not.toBe('threshold-mismatch');
+      expect(entry.match.state).toBe('score');
+      expect(result.notes.join(' ')).not.toContain('different minimum threshold');
+      // The fixture scores 100 and meets the minimum in every case, so a recent
+      // posting with no application stays apply-first at 0, 60 and 100.
+      expect(entry.category).toBe('apply-first');
+      expect(entry.match.score).toBe(100);
+    }
+  });
+
+  it('flags a real result computed under an older minimum once settings change', () => {
+    const profile = fakeProfile();
+    const job = makeJob({ id: 'job-a', postedDate: TODAY, skills: ['TypeScript'], requiredQualifications: ['TypeScript'] });
+    const outcome = calculateJobMatch(profile, job, fakeSettings({ minMatchThreshold: 60 }));
+    const entry = entryFor(
+      run({ jobs: [job], matches: [{ jobId: 'job-a', result: outcome }], minMatchThreshold: 85 }),
+      'job-a',
+    );
+    expect(entry.match.state).toBe('threshold-mismatch');
+    expect(entry.match.score).toBeNull();
+    expect(entry.category).toBe('needs-review');
+  });
+
+  it('keeps insufficient data unusable instead of a pass, with or without filtering', () => {
+    for (const minMatchThreshold of [0, 60]) {
+      const entry = entryFor(
+        run({
+          jobs: [makeJob({ id: 'job-a', postedDate: TODAY })],
+          matches: [{ jobId: 'job-a', result: makeMatch({ outcome: 'insufficient-data', configured: minMatchThreshold }) }],
+          minMatchThreshold,
+        }),
+        'job-a',
+      );
+      expect(entry.match.state).toBe('insufficient-data');
+      expect(entry.match.score).toBeNull();
+      expect(entry.match.meetsThreshold).toBe(false);
+      expect(entry.category).toBe('needs-review');
+    }
+  });
+
+  it('leaves the higher-precedence application rule untouched by a mismatch', () => {
+    const entry = entryFor(
+      run({
+        jobs: [makeJob({ id: 'job-a', postedDate: TODAY })],
+        matches: [{ jobId: 'job-a', result: makeMatch({ score: 80, configured: 55 }) }],
+        applications: [makeApplication({ jobId: 'job-a', status: 'applied' })],
+        minMatchThreshold: 60,
+      }),
+      'job-a',
+    );
+    expect(entry.category).toBe('already-applied');
+    expect(entry.match.state).toBe('threshold-mismatch');
+    expect(entry.match.score).toBeNull();
+  });
+
+  it('keeps settings-unavailable results unavailable rather than mismatched', () => {
+    const entry = entryFor(
+      run({
+        jobs: [makeJob({ id: 'job-a', postedDate: TODAY })],
+        matches: [{ jobId: 'job-a', result: makeMatch({ score: 80, configured: 55 }) }],
+        minMatchThreshold: null,
+      }),
+      'job-a',
+    );
+    expect(entry.match.state).toBe('unavailable');
+    expect(entry.category).toBe('needs-review');
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Duplicate match inputs (Prompt 25)                                  */
+/* ------------------------------------------------------------------ */
+
+describe('duplicate match inputs fail closed', () => {
+  const job = makeJob({ id: 'job-a', postedDate: TODAY });
+
+  it('uses no score when the same job id is supplied twice, even when identical', () => {
+    const entry = entryFor(
+      run({
+        jobs: [job],
+        matches: [
+          { jobId: 'job-a', result: makeMatch({ score: 80 }) },
+          { jobId: 'job-a', result: makeMatch({ score: 80 }) },
+        ],
+      }),
+      'job-a',
+    );
+    expect(entry.match.state).toBe('duplicate-input');
+    expect(entry.match.score).toBeNull();
+    expect(entry.match.label).toBe('Duplicate match results — no score shown');
+    expect(entry.category).toBe('needs-review');
+    expect(entry.reasons.join(' ')).toContain('More than one match result');
+  });
+
+  it('is order-independent for identical and for conflicting duplicates', () => {
+    const first = { jobId: 'job-a', result: makeMatch({ score: 80 }) };
+    const other = { jobId: 'job-a', result: makeMatch({ score: 95 }) };
+    const forward = run({ jobs: [job], matches: [first, other] });
+    const backward = run({ jobs: [job], matches: [other, first] });
+    expect(forward).toEqual(backward);
+    expect(entryFor(forward, 'job-a').match.state).toBe('duplicate-input');
+    expect(entryFor(forward, 'job-a').match.score).toBeNull();
+
+    // A valid entry followed by a payload-less entry for the same job is a
+    // duplicate too — and is detected in either order.
+    const withEmptyFirst = run({ jobs: [job], matches: [{ jobId: 'job-a' } as unknown as { jobId: string; result: unknown }, first] });
+    const withEmptyLast = run({ jobs: [job], matches: [first, { jobId: 'job-a' } as unknown as { jobId: string; result: unknown }] });
+    expect(entryFor(withEmptyFirst, 'job-a').match.state).toBe('duplicate-input');
+    expect(entryFor(withEmptyLast, 'job-a').match.state).toBe('duplicate-input');
+    expect(entryFor(withEmptyFirst, 'job-a').category).toBe(entryFor(withEmptyLast, 'job-a').category);
+  });
+
+  it('never lets a duplicate decide the category through its score', () => {
+    const entry = entryFor(
+      run({
+        jobs: [job],
+        matches: [
+          { jobId: 'job-a', result: makeMatch({ outcome: 'insufficient-data' }) },
+          { jobId: 'job-a', result: makeMatch({ score: 100 }) },
+        ],
+      }),
+      'job-a',
+    );
+    expect(entry.match.state).toBe('duplicate-input');
+    expect(entry.category).toBe('needs-review');
+  });
+
+  it('leaves other jobs unaffected and records a fixed note', () => {
+    const result = run({
+      jobs: [job, makeJob({ id: 'job-b', postedDate: TODAY })],
+      matches: [
+        { jobId: 'job-a', result: makeMatch({ score: 80 }) },
+        { jobId: 'job-a', result: makeMatch({ score: 80 }) },
+        { jobId: 'job-b', result: makeMatch({ score: 80 }) },
+      ],
+    });
+    expect(entryFor(result, 'job-b').match.state).toBe('score');
+    expect(entryFor(result, 'job-b').category).toBe('apply-first');
+    expect(result.notes.join(' ')).toContain('More than one match result was supplied');
+  });
+
+  it('never mutates or rewrites the supplied duplicate results', () => {
+    const entries = [
+      { jobId: 'job-a', result: makeMatch({ score: 80 }) },
+      { jobId: 'job-a', result: makeMatch({ score: 95 }) },
+    ];
+    const fingerprint = JSON.stringify(entries);
+    run({ jobs: [job], matches: entries });
+    expect(JSON.stringify(entries)).toBe(fingerprint);
   });
 });
 

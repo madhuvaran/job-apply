@@ -10,10 +10,16 @@
  * There is deliberately NO combined numeric score anywhere in this contract:
  * prioritization is a review order, not a probability of success.
  *
+ * Dates and URLs REUSE the existing domain schemas (`postingDateSchema`,
+ * `applicationDateSchema`, `postingUrlSchema`) instead of re-parsing them, so a
+ * result can never carry an impossible calendar date or a non-http(s) link.
+ *
  * Pure module: no DOM, no network, no storage, no clock, no AI.
  */
 import { z } from 'zod';
-import { APPLICATION_STATUSES } from '../applications/schemas';
+import { APPLICATION_STATUSES, applicationDateSchema } from '../applications/schemas';
+import { postingDateSchema } from '../job-dates';
+import { postingUrlSchema } from '../job-posting';
 
 export const PRIORITY_SCHEMA_VERSION = '1';
 
@@ -63,12 +69,27 @@ export const PRIORITY_CATEGORY_META: Readonly<Record<PriorityCategory, PriorityC
   },
 };
 
-export type PriorityMatchState = 'score' | 'insufficient-data' | 'unavailable' | 'invalid';
+export type PriorityMatchState =
+  | 'score'
+  | 'insufficient-data'
+  | 'unavailable'
+  | 'invalid'
+  /** The supplied result contradicts the current threshold/settings (fail closed). */
+  | 'threshold-mismatch'
+  /** More than one match result was supplied for the same job id (fail closed). */
+  | 'duplicate-input';
 
 /** Explicit match information — never a manufactured score. */
 export const priorityMatchInfoSchema = z
   .object({
-    state: z.enum(['score', 'insufficient-data', 'unavailable', 'invalid']),
+    state: z.enum([
+      'score',
+      'insufficient-data',
+      'unavailable',
+      'invalid',
+      'threshold-mismatch',
+      'duplicate-input',
+    ]),
     /** 0–100 only for `score`; null in every other state. */
     score: z.number().int().min(0).max(100).nullable(),
     /** The minimum the estimate was compared against; null when unavailable. */
@@ -86,7 +107,8 @@ export type PriorityMatchInfo = z.infer<typeof priorityMatchInfoSchema>;
 /** Posting-date/freshness information, kept separate from the match signal. */
 export const priorityFreshnessSchema = z
   .object({
-    postedDate: z.string().max(10).nullable(),
+    /** Reuses the posting-date schema: a real `YYYY-MM-DD` date, or null. */
+    postedDate: postingDateSchema.nullable(),
     /** Calendar-day age; null when the date is unknown OR in the future. */
     ageDays: z.number().int().min(0).nullable(),
     /** True when the stored date is after `today` (never treated as fresh). */
@@ -109,7 +131,8 @@ export const priorityApplicationSchema = z
     state: z.enum(['unavailable', 'none', 'planned', 'in-progress', 'completed']),
     status: z.enum(APPLICATION_STATUSES).nullable(),
     statusLabel: z.string().min(1).max(40).nullable(),
-    applicationDate: z.string().max(10).nullable(),
+    /** Reuses the application-log date schema: a real calendar date, or null. */
+    applicationDate: applicationDateSchema.nullable(),
     /** How many records reference this job (repeat applications are allowed). */
     linkedCount: z.number().int().min(0),
     label: z.string().min(1).max(200),
@@ -124,8 +147,8 @@ export const priorityEntrySchema = z
     category: z.enum(PRIORITY_CATEGORIES),
     title: z.string().min(1).max(200),
     company: z.string().min(1).max(200).nullable(),
-    /** Re-validated http(s) URL, or null when absent/invalid (no link shown). */
-    originalUrl: z.string().max(2048).nullable(),
+    /** Re-validated http(s) URL (the existing posting URL schema), or null. */
+    originalUrl: postingUrlSchema.nullable(),
     match: priorityMatchInfoSchema,
     freshness: priorityFreshnessSchema,
     application: priorityApplicationSchema,
@@ -151,8 +174,8 @@ export type PriorityGroup = z.infer<typeof priorityGroupSchema>;
 export const prioritizationResultSchema = z
   .object({
     schemaVersion: z.literal(PRIORITY_SCHEMA_VERSION),
-    /** The explicit calendar date the age calculation used. */
-    today: z.string().max(10),
+    /** The explicit calendar date the age calculation used (real `YYYY-MM-DD`). */
+    today: postingDateSchema,
     freshnessWindowDays: z.number().int().min(0),
     threshold: z
       .object({
@@ -166,7 +189,7 @@ export const prioritizationResultSchema = z
     /** Records that failed validation and were therefore never classified. */
     skippedJobs: z.number().int().min(0),
     /** Fail-closed explanations (fixed literals; no job or page content). */
-    notes: z.array(z.string().min(1).max(300)).max(6),
+    notes: z.array(z.string().min(1).max(300)).max(10),
   })
   .strict();
 export type PrioritizationResult = z.infer<typeof prioritizationResultSchema>;

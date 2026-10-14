@@ -419,7 +419,12 @@ decision. It is pure and local — it reads no storage, never touches the clock
 (the caller passes `today` as `YYYY-MM-DD`), never calls the network or an AI
 provider, never mutates its input and **never writes a priority back into
 storage**. Match estimates are reused exactly as `calculateJobMatch` produced
-them; nothing is re-scored here.
+them; nothing is re-scored here — but a result whose embedded threshold block
+contradicts your **current** minimum (different configured value, filtering mode
+or pass/below decision) is treated as unusable, and so is supplying more than
+one result for the same saved job. Both cases become `needs-review` with no
+score instead of being trusted (the `already-applied` rule still wins, and with
+settings unreadable the match signal stays `unavailable`).
 
 **It does not know whether a posting is still open, how many people applied, or
 your chances of getting hired.** The match estimate and the freshness signal are

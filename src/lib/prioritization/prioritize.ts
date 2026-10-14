@@ -10,7 +10,9 @@
  *   already-loaded settings (`null` = settings unreadable);
  * - never reads storage, never touches the clock, never mutates its input,
  *   never calls the network or an AI provider, and never writes anything back;
- * - fails CLOSED: unusable match data, an unreadable application log or an
+ * - fails CLOSED: unusable match data (including a result whose embedded
+ *   threshold contradicts the supplied current threshold, and duplicate match
+ *   entries for the same job id), an unreadable application log or an
  *   unreadable settings record becomes `needs-review`, never a good match;
  * - keeps the match estimate and the freshness signal as separate blocks —
  *   there is no combined numeric score and no probability of success.
@@ -40,12 +42,17 @@ import {
   type PriorityFreshness,
   type PriorityGroup,
   type PriorityMatchInfo,
+  type PriorityMatchState,
   type PrioritizationOutcome,
 } from './schemas';
 
 export { FRESHNESS_WINDOW_DAYS };
 
-/** One already-computed match result. The wrapper outcome is accepted as-is. */
+/**
+ * One already-computed match result. The wrapper outcome is accepted as-is.
+ * At most ONE entry per `jobId` is usable: supplying more than one makes that
+ * job's match signal unusable (see `prioritizeJobs`).
+ */
 export interface PrioritizationMatchInput {
   jobId: string;
   /** `JobMatchOutcome` or `JobMatchResult` — validated here, never trusted. */
@@ -82,6 +89,10 @@ const NOTE_SKIPPED_JOBS =
   'Some saved jobs failed validation and are excluded from this view.';
 const NOTE_INVALID_MATCH =
   'Some saved match results were invalid or missing, so those jobs show no score.';
+const NOTE_THRESHOLD_MISMATCH =
+  'Some match results were computed with a different minimum threshold than the current settings, so those jobs show no score until the estimate is recomputed.';
+const NOTE_DUPLICATE_MATCH_INPUT =
+  'More than one match result was supplied for the same saved job, so those jobs show no score.';
 const NOTE_THRESHOLD_OFF =
   'No match minimum is configured (minimum 0 disables threshold filtering), so any usable estimate counts as meeting it.';
 
@@ -115,43 +126,66 @@ function formatIssues(prefix: string, issues: ReadonlyArray<{ path: PropertyKey[
 /* Signal builders                                                     */
 /* ------------------------------------------------------------------ */
 
+/** A match payload that must NOT be trusted as a score. */
+type MatchPayload = JobMatchResult | 'invalid' | 'threshold-mismatch' | 'duplicate-input';
+
+/** Fail-closed match info: no score, no threshold, no filtering claim. */
+function unusableMatchInfo(state: PriorityMatchState, label: string): PriorityMatchInfo {
+  return {
+    state,
+    score: null,
+    threshold: null,
+    filtering: false,
+    meetsThreshold: null,
+    confidenceLevel: null,
+    label,
+  };
+}
+
+/**
+ * True when a supplied result's embedded threshold block is internally coherent
+ * AND consistent with the supplied current threshold. The matcher's documented
+ * mapping is the reference (see `buildThreshold` in `src/lib/matching/estimate.ts`):
+ * minimum 0 → filtering off, decision `disabled`, `meets` null; a positive
+ * minimum over insufficient data → decision `insufficient-data`, `meets` false;
+ * a positive minimum over a score → `meets` is (score >= minimum) and the
+ * decision is `pass`|`below`. Nothing is recalculated: an inconsistent result is
+ * simply not trusted.
+ */
+function thresholdIsConsistent(result: JobMatchResult, configured: number): boolean {
+  const t = result.threshold;
+  if (t.configured !== configured) return false;
+  if (t.filtering !== (configured > 0)) return false;
+  if (configured === 0) return t.decision === 'disabled' && t.meets === null;
+  if (result.estimate.outcome === 'insufficient-data') {
+    return t.decision === 'insufficient-data' && t.meets === false;
+  }
+  const meets = result.estimate.score >= configured;
+  return t.meets === meets && t.decision === (meets ? 'pass' : 'below');
+}
+
 /** Match information derived ONLY from the already-computed result. */
 function buildMatchInfo(
-  result: JobMatchResult | 'invalid' | undefined,
+  result: MatchPayload | undefined,
   settingsUsable: boolean,
 ): PriorityMatchInfo {
   if (!settingsUsable) {
-    return {
-      state: 'unavailable',
-      score: null,
-      threshold: null,
-      filtering: false,
-      meetsThreshold: null,
-      confidenceLevel: null,
-      label: 'Match unavailable — settings could not be read',
-    };
+    return unusableMatchInfo('unavailable', 'Match unavailable — settings could not be read');
+  }
+  if (result === 'duplicate-input') {
+    return unusableMatchInfo('duplicate-input', 'Duplicate match results — no score shown');
+  }
+  if (result === 'threshold-mismatch') {
+    return unusableMatchInfo(
+      'threshold-mismatch',
+      'Match result conflicts with your current settings — no score shown',
+    );
   }
   if (result === 'invalid') {
-    return {
-      state: 'invalid',
-      score: null,
-      threshold: null,
-      filtering: false,
-      meetsThreshold: null,
-      confidenceLevel: null,
-      label: 'Match result invalid — no score shown',
-    };
+    return unusableMatchInfo('invalid', 'Match result invalid — no score shown');
   }
   if (result === undefined) {
-    return {
-      state: 'unavailable',
-      score: null,
-      threshold: null,
-      filtering: false,
-      meetsThreshold: null,
-      confidenceLevel: null,
-      label: 'No match estimate available',
-    };
+    return unusableMatchInfo('unavailable', 'No match estimate available');
   }
 
   const threshold = result.threshold.configured;
@@ -285,6 +319,12 @@ function matchReason(match: PriorityMatchInfo): string {
   }
   if (match.state === 'invalid') {
     return 'The saved match result for this job is invalid, so no score is shown — review it manually.';
+  }
+  if (match.state === 'duplicate-input') {
+    return 'More than one match result was supplied for this saved job, so no score is trusted — review it manually.';
+  }
+  if (match.state === 'threshold-mismatch') {
+    return 'The saved match result was computed with a different minimum threshold than your current settings, so no score is trusted — recompute the estimate before acting on it.';
   }
   if (match.state === 'insufficient-data') {
     return 'No numeric match estimate could be computed from the posting and profile data (insufficient comparable data).';
@@ -447,12 +487,24 @@ export function prioritizeJobs(input: PrioritizationInput): PrioritizationOutcom
   if (skippedJobs > 0) notes.push(NOTE_SKIPPED_JOBS);
 
   /* --- already-computed match results (validated, never recomputed) --- */
-  const matches = new Map<string, JobMatchResult | 'invalid'>();
+  // At most ONE usable entry per job id: a second entry makes that job's match
+  // signal unusable (fail closed) instead of silently letting whichever entry
+  // happens to appear last win — so shuffling duplicates can never change the
+  // classification or the score.
+  const matches = new Map<string, MatchPayload>();
+  const seenMatchIds = new Set<string>();
   let invalidMatchCount = 0;
+  let duplicateMatchCount = 0;
   for (const entry of input.matches ?? []) {
     if (typeof entry !== 'object' || entry === null) continue;
     const jobId = (entry as { jobId?: unknown }).jobId;
     if (typeof jobId !== 'string' || jobId.length === 0) continue;
+    if (seenMatchIds.has(jobId)) {
+      matches.set(jobId, 'duplicate-input');
+      duplicateMatchCount += 1;
+      continue;
+    }
+    seenMatchIds.add(jobId);
     const payload = (entry as { result?: unknown }).result;
     if (payload === undefined || payload === null) continue;
     const validated =
@@ -466,6 +518,23 @@ export function prioritizeJobs(input: PrioritizationInput): PrioritizationOutcom
     }
   }
   if (invalidMatchCount > 0) notes.push(NOTE_INVALID_MATCH);
+  if (duplicateMatchCount > 0) notes.push(NOTE_DUPLICATE_MATCH_INPUT);
+
+  // Threshold consistency (only meaningful while settings are readable): a
+  // validated result whose embedded threshold block contradicts the supplied
+  // current threshold is NOT trusted. Settings-unavailable results stay
+  // 'unavailable' above, so this pass is skipped entirely rather than guessing.
+  let conflictingMatchCount = 0;
+  if (settingsUsable) {
+    for (const [jobId, payload] of [...matches]) {
+      if (typeof payload === 'string') continue;
+      if (!thresholdIsConsistent(payload, thresholdInput)) {
+        matches.set(jobId, 'threshold-mismatch');
+        conflictingMatchCount += 1;
+      }
+    }
+  }
+  if (conflictingMatchCount > 0) notes.push(NOTE_THRESHOLD_MISMATCH);
 
   /* --- application log (fail closed when unreadable) --- */
   let applications: Application[] | null = null;
@@ -524,7 +593,7 @@ export function prioritizeJobs(input: PrioritizationInput): PrioritizationOutcom
     groups,
     totalJobs: entries.length,
     skippedJobs,
-    notes: [...new Set(notes)].slice(0, 6),
+    notes: [...new Set(notes)].slice(0, 10),
   });
   return { kind: 'valid', result };
 }
