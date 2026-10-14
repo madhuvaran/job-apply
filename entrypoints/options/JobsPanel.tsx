@@ -18,12 +18,15 @@
  * - Resume section (Prompts 12 & 19): download a tailored PDF, explicitly
  *   save a version to the local resume history, and manage saved versions
  *   (open / export snapshot / delete with confirmation) below.
- * - Duplicate protection (Prompt 26): both creation paths (this manual form and
- *   the popup capture preview) run the PURE `findDuplicateJob()` check against
- *   the saved list BEFORE writing. A confirmed URL/identifier match, an
- *   ambiguous match, or a possible company+title match shows the saved record
- *   and waits for an explicit decision; nothing is merged, overwritten or
- *   deleted, and a separate record is only created when the user asks for it.
+ * - Duplicate protection (Prompts 26 & 26.1): both save paths (this manual form
+ *   and the popup capture preview) run `guardJobSave()` IMMEDIATELY BEFORE the
+ *   write, which re-reads the PERSISTED job postings (never this component's
+ *   possibly stale state, so a posting saved from another tab is still caught).
+ *   A confirmed URL/identifier match, an ambiguous match, or a possible
+ *   company+title match shows the saved record and waits for an explicit
+ *   decision; when editing, that same posting is excluded from its own check.
+ *   Nothing is merged, overwritten or deleted, and a separate record is only
+ *   created when the user explicitly asks for it.
  * - Priority shortlist (Prompt 24): the saved jobs are grouped into
  *   apply-first / good-match / needs-review / already-applied by the PURE
  *   `prioritizeJobs()` module (`src/lib/prioritization`). This panel only
@@ -42,7 +45,7 @@ import {
   type JobPosting,
 } from '../../src/lib/job-posting';
 import { localCalendarDate, postedDateFieldValue } from '../../src/lib/job-dates';
-import { findDuplicateJob, type DuplicateCheckResult } from '../../src/lib/job-duplicates';
+import { guardJobSave, type DuplicateCheckResult } from '../../src/lib/job-duplicates';
 import { calculateJobMatch } from '../../src/lib/matching';
 import {
   prioritizeJobs,
@@ -141,10 +144,12 @@ export default function JobsPanel() {
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
   /**
-   * Duplicate protection (Prompt 26): a non-null result means the draft matches
-   * already-saved job(s) — nothing has been written and the user decides.
+   * Duplicate protection (Prompts 26 & 26.1): a non-null result means the draft
+   * matches already-saved job(s) — nothing has been written and the user decides.
    */
   const [dupCheck, setDupCheck] = useState<DuplicateCheckResult | null>(null);
+  /** Fixed message when the pre-write check could not run (nothing was written). */
+  const [dupNotice, setDupNotice] = useState<string | null>(null);
   // Match summary (Prompt 10): selection + the AI-safe inputs it needs.
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -304,22 +309,57 @@ export default function JobsPanel() {
     return { original, candidate, nowIso };
   }, [editingId, form, postings]);
 
-  /** Write the validated draft. Only reached once the duplicate question is settled. */
-  const writePosting = useCallback(async () => {
-    const { original, candidate, nowIso } = buildCandidate();
-    const posting = createJobPosting(candidate, () => nowIso);
-    const res = await upsertJobPosting(posting);
-    if (res === null) {
-      await refresh();
-      setCreating(false);
-      setEditingId(null);
-      setForm(EMPTY_FORM);
-      setDupCheck(null);
-      setNotice(original ? 'Posting updated.' : 'Posting saved.');
-    } else if (!res.ok) {
-      setErrors([`Save failed (${res.reason}). ${res.message}`]);
-    }
-  }, [buildCandidate, refresh]);
+  /**
+   * Write the validated draft. The duplicate gate runs HERE — immediately before
+   * the write and against freshly PERSISTED postings (never this component's
+   * `postings` state), so a posting saved from another tab is still caught
+   * (Prompt 26.1). When editing, the record's own id is excluded so it is never
+   * treated as a duplicate of itself.
+   *
+   * `override` is the user's explicit choice after reviewing a warning: it skips
+   * ONLY this gate for one attempt (never a permanent setting) and still goes
+   * through the validating storage service, which refuses malformed data.
+   */
+  const writePosting = useCallback(
+    async (override: boolean) => {
+      const { original, candidate, nowIso } = buildCandidate();
+      if (!override) {
+        const decision = await guardJobSave({
+          candidate: {
+            title: form.title.trim(),
+            ...(form.company.trim() === '' ? {} : { company: form.company.trim() }),
+            ...(form.url.trim() === '' ? {} : { originalUrl: form.url.trim() }),
+          },
+          ...(editingId === null ? {} : { excludeJobIds: [editingId] }),
+        });
+        if (decision.kind === 'blocked-duplicate') {
+          setErrors([]);
+          setDupNotice(null);
+          setDupCheck(decision.result);
+          return; // nothing was written
+        }
+        if (decision.kind === 'blocked-check-failed') {
+          setDupCheck(null);
+          setDupNotice(decision.message);
+          return; // nothing was written
+        }
+      }
+      const posting = createJobPosting(candidate, () => nowIso);
+      const res = await upsertJobPosting(posting);
+      if (res === null) {
+        await refresh();
+        setCreating(false);
+        setEditingId(null);
+        setForm(EMPTY_FORM);
+        setDupCheck(null);
+        setDupNotice(null);
+        setNotice(original ? 'Posting updated.' : 'Posting saved.');
+      } else if (!res.ok) {
+        setErrors([`Save failed (${res.reason}). ${res.message}`]);
+      }
+    },
+    [buildCandidate, editingId, form, refresh],
+  );
 
   const onSave = useCallback(async () => {
     const { candidate } = buildCandidate();
@@ -331,34 +371,21 @@ export default function JobsPanel() {
       return;
     }
     setDupCheck(null);
-    // Duplicate protection (Prompt 26): compare the draft with the jobs that are
-    // already saved. The record being edited is excluded from its own check.
-    const others = postings.filter((p) => p.id !== editingId);
-    const lookup = findDuplicateJob({
-      candidate: {
-        title: form.title.trim(),
-        ...(form.company.trim() === '' ? {} : { company: form.company.trim() }),
-        ...(form.url.trim() === '' ? {} : { originalUrl: form.url.trim() }),
-      },
-      savedJobs: others,
-    });
-    if (lookup.kind === 'invalid') {
-      setErrors(['This posting could not be checked against your saved jobs, so nothing was saved.']);
-      return;
-    }
-    // A NEW posting that matches an existing one waits for an explicit decision;
-    // an edit is an intentional update of an existing record and is not blocked.
-    if (editingId === null && lookup.result.duplicate) {
-      setDupCheck(lookup.result);
-      return;
-    }
-    await writePosting();
-  }, [buildCandidate, editingId, form, postings, writePosting]);
+    setDupNotice(null);
+    // The duplicate gate runs inside `writePosting`, immediately before the
+    // write and against freshly persisted postings (Prompt 26.1).
+    await writePosting(false);
+  }, [buildCandidate, writePosting]);
 
-  /** Explicit "save anyway": never merges/overwrites, always a separate record. */
+  /**
+   * Explicit "save anyway"/"save as a separate record": one attempt, one write —
+   * the gate is not re-run, so there is no warning loop, while the storage
+   * service still validates and refuses malformed data.
+   */
   const onSaveAnyway = useCallback(() => {
     setDupCheck(null);
-    void writePosting();
+    setDupNotice(null);
+    void writePosting(true);
   }, [writePosting]);
 
   /** "View saved record": leave the form and open that job in the saved list. */
@@ -727,12 +754,25 @@ export default function JobsPanel() {
                 </p>
               </div>
             )}
+            {dupNotice !== null && (
+              <div className="duplicate-warning" role="status" data-status="check-failed">
+                <p className="warn">{dupNotice}</p>
+                <p className="hint">
+                  Duplicate protection could not run against your saved jobs. Saving anyway still
+                  goes through the same validation and will not overwrite stored data it cannot read.
+                </p>
+              </div>
+            )}
           </Section>
           <footer className="options-footer">
             <button type="button" onClick={cancel}>Cancel</button>
-            {dupCheck !== null ? (
+            {dupCheck !== null || dupNotice !== null ? (
               <button type="button" className="primary" onClick={onSaveAnyway}>
-                Save as a separate record
+                {dupCheck === null
+                  ? 'Save anyway'
+                  : editingId !== null
+                    ? 'Save changes anyway'
+                    : 'Save as a separate record'}
               </button>
             ) : (
               <button type="button" className="primary" onClick={() => void onSave()}>

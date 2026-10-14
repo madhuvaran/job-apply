@@ -46,10 +46,7 @@ import {
   loadSettings,
   upsertJobPosting,
 } from '../../src/lib/storage';
-import {
-  lookupDuplicateJob,
-  type DuplicateCheckResult,
-} from '../../src/lib/job-duplicates';
+import { guardJobSave, type DuplicateCheckResult } from '../../src/lib/job-duplicates';
 import './App.css';
 
 type Stage =
@@ -427,68 +424,83 @@ function App() {
   );
 
   /**
-   * Write the reviewed posting. Only reached when the duplicate check found
-   * nothing, or the user explicitly chose to save a separate record.
+   * Write the reviewed posting. The duplicate gate runs HERE — immediately
+   * before the write and against freshly PERSISTED job postings (never this
+   * component's React state), so a posting saved from another tab between the
+   * first check and the write is still caught (Prompt 26.1).
+   *
+   * `override` is the user's explicit "save a separate record" choice: it skips
+   * ONLY this gate for one attempt (never a permanent setting) and still goes
+   * through the validating storage service, which refuses malformed data.
    */
-  const performSave = useCallback(async () => {
-    setErrors([]);
-    const fields = buildFields();
-    setStage('saving');
-    try {
-      const posting = createJobPosting(fields);
-      const res = await upsertJobPosting(posting);
-      if (res === null) {
-        setDupCheck(null);
-        setDupNotice(null);
-        setStage('saved');
-      } else if (!res.ok) {
-        fail(`Save failed (${res.reason}). ${res.message}`);
+  const writePosting = useCallback(
+    async (override: boolean) => {
+      setErrors([]);
+      const fields = buildFields();
+      if (!override) {
+        const decision = await guardJobSave({
+          candidate: {
+            title: fields.title,
+            ...(fields.company === undefined ? {} : { company: fields.company }),
+            ...(fields.originalUrl === undefined ? {} : { originalUrl: fields.originalUrl }),
+          },
+        });
+        if (decision.kind === 'blocked-duplicate') {
+          setDupNotice(null);
+          setDupCheck(decision.result);
+          return; // nothing was written
+        }
+        if (decision.kind === 'blocked-check-failed') {
+          setDupCheck(null);
+          setDupNotice(decision.message);
+          return; // nothing was written
+        }
       }
-    } catch {
-      fail('Could not validate the posting. Review the fields and try again.');
-    }
-  }, [buildFields, fail]);
+      setStage('saving');
+      try {
+        const posting = createJobPosting(fields);
+        const res = await upsertJobPosting(posting);
+        if (res === null) {
+          setDupCheck(null);
+          setDupNotice(null);
+          setStage('saved');
+        } else if (!res.ok) {
+          fail(`Save failed (${res.reason}). ${res.message}`);
+        }
+      } catch {
+        fail('Could not validate the posting. Review the fields and try again.');
+      }
+    },
+    [buildFields, fail],
+  );
 
   /**
-   * "Save posting": validate, then check the candidate against the SAVED jobs
-   * (read-only) before writing anything. A confirmed/possible/ambiguous match
-   * shows a warning and waits for an explicit decision; an unreadable saved list
-   * is reported as inconclusive instead of being treated as "nothing saved".
+   * "Save posting": validate, then write through the fresh, pre-write duplicate
+   * gate. A confirmed/possible/ambiguous match shows the warning and waits for an
+   * explicit decision; an unreadable saved list is reported instead of being
+   * treated as "nothing saved".
    */
   const onSave = useCallback(async () => {
     setErrors([]);
     setDupCheck(null);
     setDupNotice(null);
-    const fields = buildFields();
-    const issues = validatePostingDraft(fields);
+    const issues = validatePostingDraft(buildFields());
     if (issues.length > 0) {
       setErrors(issues);
       return;
     }
-    const lookup = await lookupDuplicateJob({
-      title: fields.title,
-      ...(fields.company === undefined ? {} : { company: fields.company }),
-      ...(fields.originalUrl === undefined ? {} : { originalUrl: fields.originalUrl }),
-    });
-    if (!lookup.ok) {
-      // Nothing was saved. The check could not run, so the user decides whether
-      // to save anyway (the write itself still fails closed on broken storage).
-      setDupNotice(lookup.message);
-      return;
-    }
-    if (lookup.result.duplicate) {
-      setDupCheck(lookup.result);
-      return;
-    }
-    await performSave();
-  }, [buildFields, performSave]);
+    await writePosting(false);
+  }, [buildFields, writePosting]);
 
-  /** Explicit "save anyway": creates a separate record (never merges/overwrites). */
+  /**
+   * Explicit "save anyway" / "save as a separate record": one attempt, one write
+   * — the gate is not re-run, so there is no warning loop.
+   */
   const onSaveAnyway = useCallback(() => {
     setDupCheck(null);
     setDupNotice(null);
-    void performSave();
-  }, [performSave]);
+    void writePosting(true);
+  }, [writePosting]);
 
   const onCancel = useCallback(() => {
     setForm(EMPTY_FORM);
@@ -730,9 +742,13 @@ function App() {
             </ul>
           )}
           {dupNotice !== null && (
-            <p className="warn" role="status">
-              {dupNotice}
-            </p>
+            <div className="duplicate-warning" role="status" data-status="check-failed">
+              <p className="warn">{dupNotice}</p>
+              <p className="hint">
+                Duplicate protection could not run against your saved jobs, so nothing was saved.
+                Saving anyway writes a separate record and still goes through the same validation.
+              </p>
+            </div>
           )}
           {dupCheck !== null && (
             <div className="duplicate-warning" role="alert" data-status={dupCheck.status}>
@@ -780,10 +796,6 @@ function App() {
                 Save anyway
               </button>
               <button type="button" onClick={onCancel}>Cancel</button>
-              <p className="hint">
-                Duplicate protection could not run against your saved jobs. Saving anyway writes a
-                separate record; nothing is merged or overwritten.
-              </p>
             </>
           ) : (
             <>

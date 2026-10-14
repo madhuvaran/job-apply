@@ -117,6 +117,28 @@ export const savedExternalIdSchema = z
 export type SavedExternalId = z.infer<typeof savedExternalIdSchema>;
 
 /* ------------------------------------------------------------------ */
+/* Lookup options                                                      */
+/* ------------------------------------------------------------------ */
+
+/** How many saved job ids one lookup may exclude (bounded). */
+export const MAX_EXCLUDED_JOBS = 20;
+
+/**
+ * Narrowly scoped options for a lookup. `excludeJobIds` exists so the record
+ * being EDITED can be left out of its own duplicate check — nothing else.
+ * Strict and bounded like every other input in this module.
+ */
+export const duplicateLookupOptionsSchema = z
+  .object({
+    excludeJobIds: z
+      .array(z.string().min(1).max(MAX_IDENTITY_CHARS))
+      .max(MAX_EXCLUDED_JOBS)
+      .optional(),
+  })
+  .strict();
+export type DuplicateLookupOptions = z.infer<typeof duplicateLookupOptionsSchema>;
+
+/* ------------------------------------------------------------------ */
 /* Result                                                              */
 /* ------------------------------------------------------------------ */
 

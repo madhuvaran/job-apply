@@ -15,3 +15,8 @@ export {
   type DuplicateCheckInput,
 } from './duplicates';
 export { lookupDuplicateJob, type DuplicateLookupFailureReason, type DuplicateLookupOutcome } from './service';
+export {
+  guardJobSave,
+  type SaveGuardDecision,
+  type SaveGuardInput,
+} from './save-guard';

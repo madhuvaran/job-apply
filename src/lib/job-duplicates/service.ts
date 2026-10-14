@@ -17,7 +17,12 @@
  */
 import { loadJobPostings } from '../storage';
 import { findDuplicateJob } from './duplicates';
-import type { DuplicateCandidate, DuplicateCheckResult } from './schemas';
+import {
+  duplicateLookupOptionsSchema,
+  type DuplicateCandidate,
+  type DuplicateCheckResult,
+  type DuplicateLookupOptions,
+} from './schemas';
 
 export type DuplicateLookupFailureReason = 'malformed' | 'unavailable' | 'invalid';
 
@@ -27,15 +32,28 @@ export type DuplicateLookupOutcome =
 
 const MESSAGE_INVALID_IDENTITY =
   'This posting could not be checked for duplicates because its identity fields are invalid. Nothing was saved.';
+const MESSAGE_INVALID_OPTIONS =
+  'This posting could not be checked for duplicates because the lookup options were invalid. Nothing was saved.';
 
 /**
- * Check one not-yet-saved posting against the saved jobs. Read-only; the saved
- * list is never modified, and a list that cannot be read is reported as such
- * rather than being treated as empty.
+ * Check one not-yet-saved posting against the saved jobs, ALWAYS re-reading the
+ * persisted list (call it again immediately before a write). Read-only; the
+ * saved list is never modified, and a list that cannot be read is reported as
+ * such rather than being treated as empty.
+ *
+ * `options.excludeJobIds` is a narrowly scoped exclusion for the record being
+ * edited, so a posting is never treated as a duplicate of itself.
  */
 export async function lookupDuplicateJob(
   candidate: DuplicateCandidate,
+  options: DuplicateLookupOptions = {},
 ): Promise<DuplicateLookupOutcome> {
+  const parsedOptions = duplicateLookupOptionsSchema.safeParse(options);
+  if (!parsedOptions.success) {
+    return { ok: false, reason: 'invalid', message: MESSAGE_INVALID_OPTIONS };
+  }
+  const excluded = new Set(parsedOptions.data.excludeJobIds ?? []);
+
   const loaded = await loadJobPostings();
   if (!loaded.ok && loaded.reason !== 'absent') {
     return {
@@ -44,7 +62,7 @@ export async function lookupDuplicateJob(
       message: loaded.message,
     };
   }
-  const savedJobs = loaded.ok ? loaded.data.postings : [];
+  const savedJobs = (loaded.ok ? loaded.data.postings : []).filter((job) => !excluded.has(job.id));
   const outcome = findDuplicateJob({ candidate, savedJobs });
   if (outcome.kind === 'valid') return { ok: true, result: outcome.result };
   return { ok: false, reason: 'invalid', message: MESSAGE_INVALID_IDENTITY };

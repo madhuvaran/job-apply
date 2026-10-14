@@ -122,6 +122,56 @@ describe('lookupDuplicateJob', () => {
     expect(h.calls.remove).toBe(0);
   });
 
+  it('excludes a scoped set of saved ids (the record being edited)', async () => {
+    store({ schemaVersion: '1', postings: [SAVED_JOB, { ...SAVED_JOB, id: 'job-other' }] });
+
+    const withExclusion = await lookupDuplicateJob(
+      { title: 'Backend Engineer', originalUrl: 'https://example.com/jobs/1' },
+      { excludeJobIds: ['job-saved'] },
+    );
+    expect(withExclusion.ok).toBe(true);
+    if (withExclusion.ok) {
+      // The other record with the same URL is still a match.
+      expect(withExclusion.result.duplicate).toBe(true);
+      expect(withExclusion.result.jobId).toBe('job-other');
+    }
+
+    const bothExcluded = await lookupDuplicateJob(
+      { title: 'Backend Engineer', originalUrl: 'https://example.com/jobs/1' },
+      { excludeJobIds: ['job-saved', 'job-other'] },
+    );
+    expect(bothExcluded.ok).toBe(true);
+    if (bothExcluded.ok) {
+      expect(bothExcluded.result.duplicate).toBe(false);
+      expect(bothExcluded.result.inspectedJobs).toBe(0);
+    }
+    expect(h.calls.set).toBe(0);
+    expect(h.calls.remove).toBe(0);
+  });
+
+  it('rejects invalid lookup options without touching storage', async () => {
+    store({ schemaVersion: '1', postings: [SAVED_JOB] });
+    const cases: unknown[] = [
+      { excludeJobIds: [''] },
+      { excludeJobIds: Array.from({ length: 21 }, (_, i) => `job-${i}`) },
+      { excludeJobIds: ['job-saved'], extra: true },
+      { excludeJobIds: 'job-saved' },
+    ];
+    for (const options of cases) {
+      const outcome = await lookupDuplicateJob(
+        { title: 'Backend Engineer' },
+        options as { excludeJobIds?: string[] },
+      );
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) {
+        expect(outcome.reason).toBe('invalid');
+        expect(outcome.message).toContain('options');
+      }
+    }
+    expect(h.calls.set).toBe(0);
+    expect(h.calls.remove).toBe(0);
+  });
+
   it('rejects an unusable candidate without reading or writing storage', async () => {
     store({ schemaVersion: '1', postings: [SAVED_JOB] });
     const outcome = await lookupDuplicateJob({ title: '' } as unknown as { title: string });

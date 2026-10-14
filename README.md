@@ -517,15 +517,26 @@ errors), and malformed saved records are skipped rather than trusted.
 Saving is never automatic or destructive: a match shows a warning with the saved
 job's title/company, a *View saved record* action and a safe link to the saved
 posting when it has one, and the write only happens if you choose *Save as a
-separate record*. Nothing is overwritten, merged or deleted, and the check is
-read-only (the saved list is never modified, not even when it is malformed).
+separate record* (that override is per-attempt — it never becomes a setting, and
+it does not skip record validation or the guard against malformed stored data).
+Nothing is overwritten, merged or deleted, and the check is read-only (the saved
+list is never modified, not even when it is malformed).
+
+The check runs **immediately before the write** and always re-reads the
+persisted saved-jobs list — never a possibly stale in-memory copy — so a posting
+saved from another tab after an earlier check is still caught. When editing, the
+record's own id is excluded so it is never flagged as its own duplicate. Chrome
+storage offers no transactional compare-and-write, so this narrows the race
+window but does not make the check atomic: two tabs saving the same vacancy at
+the same instant can still both succeed.
 
 Limitations: matching is conservative and textual — the same vacancy reposted
 under a different URL with a reworded title legitimately counts as a new job; a
 source identifier is trusted only inside that source's own domain; the check
 cannot run while the saved list is unreadable (that is reported instead of being
-treated as "nothing saved"); and no browser pass over the two warning UIs has
-been performed here.
+treated as "nothing saved"); the pre-write check is not atomic (Chrome storage
+has no compare-and-write); and the warning UIs are exercised with jsdom +
+`react-dom` rather than a real extension session in a browser.
 
 ## Autofill (deterministic foundation, no AI)
 

@@ -1,5 +1,99 @@
 # PROGRESS
 
+## Done (2026-10-14, task 32 / Prompt 26.1: recheck duplicates immediately before save)
+Focused fix for the race found in the Prompt 26 review: the duplicate gate could
+rely on a copy of the saved list read earlier (Options → Jobs used its in-memory
+`postings` state), so a posting saved from another tab between the check and the
+write could slip through. No new feature, no matching-rule change, no new
+dependency, permission or manifest change.
+
+### Root cause
+- Options → Jobs ran `findDuplicateJob()` against the component's `postings`
+  React state and then wrote — state loaded at mount time is stale the moment
+  another tab saves something.
+- The popup checked on click but the check and the write were separate steps with
+  no guarantee the list was re-read at write time.
+
+### Fix
+- **`src/lib/job-duplicates/schemas.ts`** — new strict, bounded
+  `duplicateLookupOptionsSchema` with `excludeJobIds` (max `MAX_EXCLUDED_JOBS`
+  = 20, each id `1..MAX_IDENTITY_CHARS`) for the record being edited.
+- **`src/lib/job-duplicates/service.ts`** — `lookupDuplicateJob(candidate,
+  options = {})` still ALWAYS re-reads the persisted postings through
+  `loadJobPostings()` (never a caller's cached list), and now filters out the
+  excluded ids. Invalid options fail closed with a fixed message (no values).
+- **`src/lib/job-duplicates/save-guard.ts`** (new, pure orchestration) —
+  `guardJobSave({ candidate, excludeJobIds?, override? })` returns
+  `proceed` | `blocked-duplicate` | `blocked-check-failed`. It validates the
+  candidate itself, then re-reads persisted data through the service. `override`
+  is the explicit per-attempt user choice: it skips ONLY the duplicate gate and
+  never bypasses storage validation.
+- **Popup** (`entrypoints/popup/App.tsx`) — `writePosting(override)` runs the
+  guard inside the write path (immediately before `createJobPosting` +
+  `upsertJobPosting`), so a duplicate shows the existing warning instead of
+  saving. `onSave` validates then calls `writePosting(false)`;
+  `onSaveAnyway` → `writePosting(true)` (one attempt, one write — no loop). The
+  "check could not run" case now renders the same warning block with
+  `data-status="check-failed"` and an explicit `Save anyway`.
+- **Options → Jobs** (`entrypoints/options/JobsPanel.tsx`) — the state-based
+  check is gone: `writePosting(override)` runs the guard immediately before the
+  write, passing `excludeJobIds: [editingId]` when editing, so the record never
+  flags itself while a *different* saved record with the same identity still
+  blocks. New `dupNotice` state mirrors the popup; the primary button becomes
+  `Save anyway` (check failed) / `Save changes anyway` (editing) /
+  `Save as a separate record` (new record).
+
+### Regression tests (+19 → 940 total)
+- **`save-guard.test.ts` (10, mocked extension storage)** — proceeds with nothing
+  saved / absent list; **blocks when a matching posting is persisted AFTER an
+  earlier check** (the exact race) and writes nothing; ambiguity passthrough
+  (`status: 'ambiguous'`, `jobId: null`); `excludeJobIds` excludes only the
+  given ids (no exclusion → blocked; a *different* record with the same URL →
+  blocked); override proceeds for one attempt, the next normal attempt is gated
+  again, and the guard made zero `set`/`remove` calls; malformed and unavailable
+  storage → typed `blocked-check-failed`; invalid candidate/options → fixed
+  message that never quotes the value; deterministic for identical inputs.
+- **`save-race-ui.test.ts` (7, jsdom + `react-dom/client` + `act`, no timers)**
+  — the race is simulated by mutating the MOCKED STORAGE between render and
+  save, so component state can never see the new posting:
+  popup blocks the save and shows the warning, then the explicit override writes
+  exactly one extra record; popup normal save unchanged; popup malformed storage
+  → check-failed warning + `Save anyway` that still fails validation
+  (`Save failed (malformed)`) and leaves the stored value byte-identical;
+  Options → Jobs covers the same four cases, plus **editing never flags its own
+  record** (`Posting updated.`, still one stored posting).
+- **`service.test.ts` (5 → 7)** — scoped exclusions filter only the given ids
+  (other records still match) and every invalid-options shape fails closed
+  without writing.
+
+### Concurrency limitation (documented in README + here)
+Chrome storage provides no transactional compare-and-write, so a fresh read
+immediately before writing NARROWS the race window but does not make duplicate
+detection atomic: two tabs saving the same vacancy at the same instant can still
+both succeed. No locking layer, storage architecture change, dependency or
+permission was added to claim otherwise.
+
+### Commands run this task (exit statuses captured inline)
+- `npx vitest run` → **exit 0, 940/940 passed** (53 files; 921 before + 19 new)
+- `npm run compile` (tsc --noEmit) → **exit 0**
+- `npm run build` (wxt build, chrome-mv3) → **exit 0** (manifest unchanged:
+  `storage`, `activeTab`, `scripting`; no host permissions)
+
+### Limitations / known issues
+- The pre-write check is not atomic (see above); the definitive fix would need a
+  transactional storage layer that does not exist in `chrome.storage`.
+- The override is deliberately blunt: choosing *Save as a separate record* saves
+  a second record even if the first is the same vacancy — the user's explicit
+  choice is honoured, and it is never remembered for later saves.
+- Rule 2 (source-scoped external identifier) remains inert until some source
+  publishes a trustworthy identifier (unchanged from Prompt 26).
+- UI verification is now jsdom-based (a real DOM, no timers), but still not a
+  real browser extension session.
+
+### Next
+- Prompt 27 (not started — this task stops here).
+
+---
 ## Done (2026-10-14, task 31 / Prompt 26: duplicate-job detection and safe capture)
 One focused feature: the same vacancy can no longer be saved twice by accident,
 and two genuinely different vacancies are never merged. No new dependency,
