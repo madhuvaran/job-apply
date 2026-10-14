@@ -46,6 +46,10 @@ import {
   loadSettings,
   upsertJobPosting,
 } from '../../src/lib/storage';
+import {
+  lookupDuplicateJob,
+  type DuplicateCheckResult,
+} from '../../src/lib/job-duplicates';
 import './App.css';
 
 type Stage =
@@ -126,6 +130,14 @@ function App() {
   const [truncated, setTruncated] = useState(false);
   // Fixed, content-free note when the page published conflicting posting dates.
   const [postedDateNotice, setPostedDateNotice] = useState<string | null>(null);
+  /**
+   * Duplicate protection (Prompt 26): a non-null result means the posting about
+   * to be saved already exists in the saved list (or several saved jobs match
+   * it) — nothing has been written yet and the user decides what happens next.
+   */
+  const [dupCheck, setDupCheck] = useState<DuplicateCheckResult | null>(null);
+  /** Fixed message when the saved list could not be read (check inconclusive). */
+  const [dupNotice, setDupNotice] = useState<string | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
   const [errorText, setErrorText] = useState<string | null>(null);
   // Autofill review state (held in memory only; never stored).
@@ -399,9 +411,9 @@ function App() {
   }, [afDescriptors, afContext, afScanId, aiState.proposal, aiState.selected, fail]);
 
   /* ---------------- save / cancel (capture) ---------------- */
-  const onSave = useCallback(async () => {
-    setErrors([]);
-    const fields = {
+  /** The reviewed draft, as the strict posting schema expects it. */
+  const buildFields = useCallback(
+    () => ({
       title: form.title.trim(),
       company: form.company.trim() || undefined,
       location: form.location.trim() || undefined,
@@ -410,17 +422,24 @@ function App() {
       source: 'page-capture' as const,
       // Blank → ABSENT: never the capture time, never today.
       postedDate: postedDateFieldValue(form.postedDate),
-    };
-    const issues = validatePostingDraft(fields);
-    if (issues.length > 0) {
-      setErrors(issues);
-      return;
-    }
+    }),
+    [form],
+  );
+
+  /**
+   * Write the reviewed posting. Only reached when the duplicate check found
+   * nothing, or the user explicitly chose to save a separate record.
+   */
+  const performSave = useCallback(async () => {
+    setErrors([]);
+    const fields = buildFields();
     setStage('saving');
     try {
       const posting = createJobPosting(fields);
       const res = await upsertJobPosting(posting);
       if (res === null) {
+        setDupCheck(null);
+        setDupNotice(null);
         setStage('saved');
       } else if (!res.ok) {
         fail(`Save failed (${res.reason}). ${res.message}`);
@@ -428,12 +447,55 @@ function App() {
     } catch {
       fail('Could not validate the posting. Review the fields and try again.');
     }
-  }, [form, fail]);
+  }, [buildFields, fail]);
+
+  /**
+   * "Save posting": validate, then check the candidate against the SAVED jobs
+   * (read-only) before writing anything. A confirmed/possible/ambiguous match
+   * shows a warning and waits for an explicit decision; an unreadable saved list
+   * is reported as inconclusive instead of being treated as "nothing saved".
+   */
+  const onSave = useCallback(async () => {
+    setErrors([]);
+    setDupCheck(null);
+    setDupNotice(null);
+    const fields = buildFields();
+    const issues = validatePostingDraft(fields);
+    if (issues.length > 0) {
+      setErrors(issues);
+      return;
+    }
+    const lookup = await lookupDuplicateJob({
+      title: fields.title,
+      ...(fields.company === undefined ? {} : { company: fields.company }),
+      ...(fields.originalUrl === undefined ? {} : { originalUrl: fields.originalUrl }),
+    });
+    if (!lookup.ok) {
+      // Nothing was saved. The check could not run, so the user decides whether
+      // to save anyway (the write itself still fails closed on broken storage).
+      setDupNotice(lookup.message);
+      return;
+    }
+    if (lookup.result.duplicate) {
+      setDupCheck(lookup.result);
+      return;
+    }
+    await performSave();
+  }, [buildFields, performSave]);
+
+  /** Explicit "save anyway": creates a separate record (never merges/overwrites). */
+  const onSaveAnyway = useCallback(() => {
+    setDupCheck(null);
+    setDupNotice(null);
+    void performSave();
+  }, [performSave]);
 
   const onCancel = useCallback(() => {
     setForm(EMPTY_FORM);
     setTruncated(false);
     setPostedDateNotice(null);
+    setDupCheck(null);
+    setDupNotice(null);
     setErrors([]);
     setStage('idle'); // nothing was written
   }, []);
@@ -667,10 +729,70 @@ function App() {
               ))}
             </ul>
           )}
-          <button type="button" className="primary" onClick={() => void onSave()}>
-            Save posting
-          </button>
-          <button type="button" onClick={onCancel}>Cancel</button>
+          {dupNotice !== null && (
+            <p className="warn" role="status">
+              {dupNotice}
+            </p>
+          )}
+          {dupCheck !== null && (
+            <div className="duplicate-warning" role="alert" data-status={dupCheck.status}>
+              <p className="warn">{dupCheck.explanation}</p>
+              {dupCheck.matches.length > 0 && (
+                <ul className="duplicate-matches">
+                  {dupCheck.matches.map((m) => (
+                    <li key={m.jobId}>
+                      <strong>{m.title}</strong>
+                      {m.company !== null && <span className="hint"> — {m.company}</span>}
+                      {m.originalUrl !== null && (
+                        <span className="hint">
+                          {' '}
+                          <a href={m.originalUrl} target="_blank" rel="noreferrer noopener">
+                            Saved posting
+                          </a>
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {dupCheck.status === 'possible' && (
+                <p className="hint">
+                  Review the saved job before deciding: if this is a different vacancy, saving creates
+                  a separate record.
+                </p>
+              )}
+              <button type="button" onClick={openOptions}>View saved record</button>
+            </div>
+          )}
+          {dupCheck !== null ? (
+            <>
+              <button type="button" className="primary" onClick={onSaveAnyway}>
+                Save as a separate record
+              </button>
+              <button type="button" onClick={onCancel}>Cancel</button>
+              <p className="hint">
+                Nothing is merged or overwritten — a separate record is created only if you choose it.
+              </p>
+            </>
+          ) : dupNotice !== null ? (
+            <>
+              <button type="button" className="primary" onClick={onSaveAnyway}>
+                Save anyway
+              </button>
+              <button type="button" onClick={onCancel}>Cancel</button>
+              <p className="hint">
+                Duplicate protection could not run against your saved jobs. Saving anyway writes a
+                separate record; nothing is merged or overwritten.
+              </p>
+            </>
+          ) : (
+            <>
+              <button type="button" className="primary" onClick={() => void onSave()}>
+                Save posting
+              </button>
+              <button type="button" onClick={onCancel}>Cancel</button>
+            </>
+          )}
         </div>
       )}
 
@@ -686,6 +808,8 @@ function App() {
               setForm(EMPTY_FORM);
               setTruncated(false);
               setPostedDateNotice(null);
+              setDupCheck(null);
+              setDupNotice(null);
               setStage('idle');
             }}
           >

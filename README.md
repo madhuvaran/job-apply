@@ -483,6 +483,50 @@ claims, no navigation or automatic application submission, and no prioritization
 is written back to storage. Verification here is unit/`react-dom/server` level
 (no real job site was accessed).
 
+## Duplicate job detection (local, no AI)
+
+`src/lib/job-duplicates/` stops the same vacancy from being saved twice while
+keeping genuinely different vacancies separate. Both creation paths — the popup
+capture preview and *Add job manually* in Options → Jobs — run
+`findDuplicateJob()` against the saved list **before** anything is written.
+
+Rules, applied in this order (first hit wins):
+
+1. **Canonical URL** — validated http(s) URLs compared after removing the
+   fragment and normalizing only safe, irrelevant differences (scheme/host case,
+   a leading `www.`, an explicit default port). The path and every query
+   parameter are preserved verbatim: parameters are never stripped or reordered,
+   and `http://` is not treated as the same posting as `https://`.
+2. **Explicit external identifier** — only identifiers the source itself
+   published, and only inside the same source domain (an identifier is trusted
+   only when it belongs to that saved job's own URL host). Identifiers are never
+   invented or derived, and the same text on two different sites never merges.
+   *The current job model and capture metadata provide no such identifier, so in
+   this build the rule never fires — it exists for sources that do.*
+3. **Normalized company + title** — the weak fallback: case, surrounding and
+   repeated whitespace only; no fuzzy, partial or stemmed matching. A hit here is
+   reported as a **possible** duplicate for you to review.
+4. Otherwise: no duplicate.
+
+If several saved records share the same canonical URL or identifier the result is
+**ambiguous** — no winner is chosen and nothing is merged. Results are strict Zod
+objects (bounded strings/arrays, fixed reason codes and explanations, saved job
+ids/titles only — never page text, captured field values, personal data or raw
+errors), and malformed saved records are skipped rather than trusted.
+
+Saving is never automatic or destructive: a match shows a warning with the saved
+job's title/company, a *View saved record* action and a safe link to the saved
+posting when it has one, and the write only happens if you choose *Save as a
+separate record*. Nothing is overwritten, merged or deleted, and the check is
+read-only (the saved list is never modified, not even when it is malformed).
+
+Limitations: matching is conservative and textual — the same vacancy reposted
+under a different URL with a reworded title legitimately counts as a new job; a
+source identifier is trusted only inside that source's own domain; the check
+cannot run while the saved list is unreadable (that is reported instead of being
+treated as "nothing saved"); and no browser pass over the two warning UIs has
+been performed here.
+
 ## Autofill (deterministic foundation, no AI)
 
 `src/lib/autofill/` is the first, conservative autofill foundation. It fills
@@ -666,9 +710,13 @@ with a synthetic fixture set and matrix (Prompt 16), the opt-in AI-assisted
 field-mapping layer (Prompt 17), the local tailored resume version history
 + snapshot export (Prompt 19), the ATS-friendly Word (.docx) resume export
 (Prompt 20), optional **job posting-date** capture/display groundwork (Prompt 23
-— an explicit published date only), and the **freshness-aware job prioritization
+— an explicit published date only), the **freshness-aware job prioritization
 + Options → Jobs priority shortlist** (Prompt 24 — four categories, a documented
 7-day freshness window, stable deterministic ordering; no expiry reminders, no
-notification, no combined score and nothing written back to storage).
+notification, no combined score and nothing written back to storage), that
+schema's hardening (Prompt 25), and **duplicate-job detection** on both save
+paths (Prompt 26 — conservative canonical-URL / source-identifier / normalized
+company+title rules, ambiguous matches never auto-picked, nothing merged or
+overwritten).
 **Not yet built: a Workday adapter, live wiring of the AI provider endpoint, and
 the deeper application-form automation.**

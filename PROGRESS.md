@@ -1,5 +1,126 @@
 # PROGRESS
 
+## Done (2026-10-14, task 31 / Prompt 26: duplicate-job detection and safe capture)
+One focused feature: the same vacancy can no longer be saved twice by accident,
+and two genuinely different vacancies are never merged. No new dependency,
+permission or manifest change, no scraping, no extra network request, no AI, no
+automatic merge/overwrite/delete, and no change to matching, resume or
+application-log behavior.
+
+### Inspected entry points (before writing any code)
+- Storage key/model: `STORAGE_KEYS.jobPostings` (`job-postings.v1`) with the
+  strict `jobPostingSchema` (no external job identifier field exists anywhere).
+- Both creation paths write through `upsertJobPosting()`:
+  1. popup capture preview — `entrypoints/popup/App.tsx` `onSave`
+     (`createJobPosting` + `upsertJobPosting`, `source: 'page-capture'`);
+  2. Options → Jobs manual form — `entrypoints/options/JobsPanel.tsx` `onSave`
+     (`validatePostingDraft` + `createJobPosting` + `upsertJobPosting`).
+- Capture metadata (`src/lib/capture.ts`) publishes url/title/company/location/
+  description/`postedDate` only — no trustworthy external identifier.
+
+### New pure module — `src/lib/job-duplicates/`
+- **`schemas.ts`** — strict result contract: `DUPLICATE_SCHEMA_VERSION`,
+  bounded `MAX_DUPLICATE_MATCHES`/`MAX_IDENTITY_CHARS`/`MIN_IDENTITY_CHARS`,
+  ordered `DUPLICATE_METHODS` (`canonical-url` → `external-id` →
+  `company-title`), `DUPLICATE_STATUSES` (`none`/`confirmed`/`possible`/
+  `ambiguous`), fixed `DUPLICATE_REASON_CODES` + fixed privacy-safe
+  `DUPLICATE_REASON_EXPLANATIONS`, strict candidate / saved-identifier / match /
+  result schemas (URLs reuse the existing `postingUrlSchema`) and
+  `validateDuplicateCheck()` (path+code issues only).
+- **`duplicates.ts`** — `findDuplicateJob({ candidate, savedJobs, externalIds })`,
+  plus exported `canonicalJobUrl`, `sourceDomain`, `normalizeIdentity`. Rules:
+  1. canonical URL — fragment removed; scheme/host case, leading `www.` and an
+     explicit default port normalized; path, query and scheme otherwise
+     PRESERVED verbatim (parameters never stripped or reordered);
+  2. external identifier — only identifiers the source itself published, only
+     compared inside the candidate's own source domain, and trusted only when
+     the referenced saved job's own URL host matches the claimed domain (never
+     invented, never cross-domain);
+  3. normalized company + title (case, surrounding/repeated whitespace only — no
+     fuzzy/partial/stemmed matching), reported as `possible` for review;
+  4. otherwise no duplicate.
+  Several hits on a trustworthy identity produce `ambiguous` with `jobId: null`
+  (no winner chosen); matches are de-duplicated and sorted by job id, so input
+  order can never change the outcome. Malformed saved records are skipped and
+  counted (`skippedJobs`) — never trusted as matches. Invalid candidate → typed
+  `{ kind: 'invalid', issues }`. No storage/DOM/browser/network/AI/clock access,
+  no input mutation, and diagnostics never quote page text or candidate values.
+- **`service.ts`** — `lookupDuplicateJob(candidate)`: read-only wrapper over the
+  existing `loadJobPostings()` (the ONLY place storage is touched). Never writes
+  (no insert/update/repair/reset), treats an absent list as reliably empty, and
+  returns a typed failure (`malformed`/`unavailable`/`invalid`) with a fixed
+  message instead of claiming "nothing saved".
+- **`index.ts`** — public surface.
+
+### Save-flow protection (both paths, before any write)
+- **Popup** (`entrypoints/popup/App.tsx`): `onSave` validates the draft, then
+  calls `lookupDuplicateJob`; a duplicate shows a warning panel (saved
+  title/company, `View saved record` → `openOptions()`, safe link to the saved
+  posting when it has one, `Save as a separate record`, `Cancel`) and nothing is
+  written until an explicit choice. An inconclusive check shows a fixed notice
+  and still requires an explicit save. Saving clears the warning and moves to
+  the existing `saved` stage.
+- **Options → Jobs** (`entrypoints/options/JobsPanel.tsx`): the manual form runs
+  the same pure check against the jobs already loaded (the record being edited is
+  excluded from its own check), shows the same warning with a `View saved record`
+  action that opens that job in the saved list, and swaps the primary button to
+  `Save as a separate record`. Editing an existing record is not blocked (it is
+  an intentional update of one record, not a second copy).
+- No auto-merge, no overwrite, no delete, no silent second copy anywhere.
+
+### Tests (+41, all new)
+- **`duplicates.test.ts` (34)** — canonicalization (fragment/case/`www.`/default
+  port normalized; path, trailing slash, query order/values and scheme
+  preserved; non-http(s) rejected), URL rule (confirmed on cosmetic differences;
+  never merges different path/query/scheme/host; ambiguity with no winner;
+  saved jobs without a URL ignored), identifier rule (same domain confirmed;
+  cross-domain never matches in either direction; untrusted entries noted;
+  case-sensitive but whitespace-trimmed; ambiguity; URL rule wins), company+title
+  rule (case/whitespace-only match → `possible`; different title/company/missing
+  company never match; sub-minimum identity ignored; several matches stay
+  ambiguous), no-usable-identity / no-reliable-match, malformed saved records
+  skipped, typed invalid candidate, no candidate content in diagnostics, strict
+  result schema + unexpected-property rejection, determinism, input-order
+  independence, deep-frozen input immutability, clock independence,
+  zero `fetch`, and a static guard that the pure files import no storage/AI and
+  never touch the clock, DOM or browser APIs.
+- **`service.test.ts` (5)** — confirmed match from stored data; absent list as
+  reliably empty; malformed list → typed `malformed` failure with the stored
+  value left byte-identical; unavailable storage → typed failure without
+  throwing; invalid candidate rejected; and `set`/`remove` call counts of ZERO in
+  every case (read-only proof).
+- **`save-flow-ui.test.ts` (2)** — both entry points still render with the check
+  wired in (popup idle stage; Options → Jobs list, create button and priority
+  section), with no warning shown before a save is attempted.
+
+### Commands run this task (exit statuses captured inline)
+- `npx vitest run` → **exit 0, 921/921 passed** (51 files; 880 before + 41 new)
+- `npm run compile` (tsc --noEmit) → **exit 0**
+- `npm run build` (wxt build, chrome-mv3) → **exit 0** (manifest unchanged:
+  `storage`, `activeTab`, `scripting`; no host permissions)
+
+### Limitations / known issues
+- Matching is conservative and textual: the same vacancy reposted under a
+  different URL with a reworded title legitimately counts as a new job, and a
+  company+title hit is only ever a `possible` duplicate the user must confirm.
+- **Rule 2 is inert in this build**: neither the saved model nor the capture
+  metadata carries a trustworthy external job identifier, and inventing one is
+  explicitly out of scope. The rule is implemented, domain-scoped and unit
+  tested, and activates only if a source starts providing such an identifier.
+- The check cannot run while the saved job list is unreadable (malformed/
+  unavailable): that state is reported to the user rather than treated as
+  "nothing saved", and the save path itself still refuses to overwrite malformed
+  stored data.
+- Verified at unit + `react-dom/server` level only: the duplicate warning is
+  driven by component state, so no real-browser pass (clicking through the
+  warning, opening a saved record) has been performed here.
+- Dismissing a warning is always an explicit user action; nothing is merged,
+  overwritten, deleted or auto-saved.
+
+### Next
+- Prompt 27 (not started — this task stops here).
+
+---
 ## Done (2026-10-14, task 30 / Prompt 25: harden prioritization validation)
 Focused robustness fix for the Prompt 24 module. No new feature, no category-rule
 change, no matching-algorithm/application-tracking/UI-design/manifest change, no

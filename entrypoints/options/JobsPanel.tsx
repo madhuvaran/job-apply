@@ -18,6 +18,12 @@
  * - Resume section (Prompts 12 & 19): download a tailored PDF, explicitly
  *   save a version to the local resume history, and manage saved versions
  *   (open / export snapshot / delete with confirmation) below.
+ * - Duplicate protection (Prompt 26): both creation paths (this manual form and
+ *   the popup capture preview) run the PURE `findDuplicateJob()` check against
+ *   the saved list BEFORE writing. A confirmed URL/identifier match, an
+ *   ambiguous match, or a possible company+title match shows the saved record
+ *   and waits for an explicit decision; nothing is merged, overwritten or
+ *   deleted, and a separate record is only created when the user asks for it.
  * - Priority shortlist (Prompt 24): the saved jobs are grouped into
  *   apply-first / good-match / needs-review / already-applied by the PURE
  *   `prioritizeJobs()` module (`src/lib/prioritization`). This panel only
@@ -36,6 +42,7 @@ import {
   type JobPosting,
 } from '../../src/lib/job-posting';
 import { localCalendarDate, postedDateFieldValue } from '../../src/lib/job-dates';
+import { findDuplicateJob, type DuplicateCheckResult } from '../../src/lib/job-duplicates';
 import { calculateJobMatch } from '../../src/lib/matching';
 import {
   prioritizeJobs,
@@ -133,6 +140,11 @@ export default function JobsPanel() {
   const [errors, setErrors] = useState<string[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
+  /**
+   * Duplicate protection (Prompt 26): a non-null result means the draft matches
+   * already-saved job(s) — nothing has been written and the user decides.
+   */
+  const [dupCheck, setDupCheck] = useState<DuplicateCheckResult | null>(null);
   // Match summary (Prompt 10): selection + the AI-safe inputs it needs.
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -215,6 +227,7 @@ export default function JobsPanel() {
     setForm(EMPTY_FORM);
     setEditingId(null);
     setErrors([]);
+    setDupCheck(null);
     setCreating(true);
   }, []);
 
@@ -239,6 +252,7 @@ export default function JobsPanel() {
     setEditingId(posting.id);
     setCreating(true);
     setErrors([]);
+    setDupCheck(null);
   }, []);
 
   const cancel = useCallback(() => {
@@ -246,6 +260,7 @@ export default function JobsPanel() {
     setEditingId(null);
     setForm(EMPTY_FORM);
     setErrors([]); // nothing was written
+    setDupCheck(null);
   }, []);
 
   const onExtract = useCallback(() => {
@@ -259,13 +274,13 @@ export default function JobsPanel() {
     }));
   }, [form.description]);
 
-  /* ---------------- save (validate then write) ---------------- */
-  const onSave = useCallback(async () => {
+  /* ---------------- save (validate, check duplicates, then write) ---------------- */
+  /** The form as a posting draft (identity fields preserved when editing). */
+  const buildCandidate = useCallback(() => {
     const original = editingId ? postings.find((p) => p.id === editingId) : undefined;
     const minYears = parseOptionalNumber(form.minYears);
     const maxYears = parseOptionalNumber(form.maxYears);
     const nowIso = new Date().toISOString();
-
     const candidate = {
       ...(original ? { id: original.id, capturedAt: original.capturedAt, source: original.source } : {}),
       title: form.title.trim(),
@@ -286,14 +301,12 @@ export default function JobsPanel() {
       postedDate: postedDateFieldValue(form.postedDate),
       ...(original ? { updatedAt: nowIso } : {}),
     };
+    return { original, candidate, nowIso };
+  }, [editingId, form, postings]);
 
-    // Validate the draft: identity placeholders are supplied for a NEW posting
-    // (createJobPosting mints the real id/timestamp); an edit keeps its own.
-    const issues = validatePostingDraft(candidate);
-    if (issues.length > 0) {
-      setErrors(issues);
-      return;
-    }
+  /** Write the validated draft. Only reached once the duplicate question is settled. */
+  const writePosting = useCallback(async () => {
+    const { original, candidate, nowIso } = buildCandidate();
     const posting = createJobPosting(candidate, () => nowIso);
     const res = await upsertJobPosting(posting);
     if (res === null) {
@@ -301,11 +314,61 @@ export default function JobsPanel() {
       setCreating(false);
       setEditingId(null);
       setForm(EMPTY_FORM);
+      setDupCheck(null);
       setNotice(original ? 'Posting updated.' : 'Posting saved.');
     } else if (!res.ok) {
       setErrors([`Save failed (${res.reason}). ${res.message}`]);
     }
-  }, [editingId, form, postings, refresh]);
+  }, [buildCandidate, refresh]);
+
+  const onSave = useCallback(async () => {
+    const { candidate } = buildCandidate();
+    // Validate the draft: identity placeholders are supplied for a NEW posting
+    // (createJobPosting mints the real id/timestamp); an edit keeps its own.
+    const issues = validatePostingDraft(candidate);
+    if (issues.length > 0) {
+      setErrors(issues);
+      return;
+    }
+    setDupCheck(null);
+    // Duplicate protection (Prompt 26): compare the draft with the jobs that are
+    // already saved. The record being edited is excluded from its own check.
+    const others = postings.filter((p) => p.id !== editingId);
+    const lookup = findDuplicateJob({
+      candidate: {
+        title: form.title.trim(),
+        ...(form.company.trim() === '' ? {} : { company: form.company.trim() }),
+        ...(form.url.trim() === '' ? {} : { originalUrl: form.url.trim() }),
+      },
+      savedJobs: others,
+    });
+    if (lookup.kind === 'invalid') {
+      setErrors(['This posting could not be checked against your saved jobs, so nothing was saved.']);
+      return;
+    }
+    // A NEW posting that matches an existing one waits for an explicit decision;
+    // an edit is an intentional update of an existing record and is not blocked.
+    if (editingId === null && lookup.result.duplicate) {
+      setDupCheck(lookup.result);
+      return;
+    }
+    await writePosting();
+  }, [buildCandidate, editingId, form, postings, writePosting]);
+
+  /** Explicit "save anyway": never merges/overwrites, always a separate record. */
+  const onSaveAnyway = useCallback(() => {
+    setDupCheck(null);
+    void writePosting();
+  }, [writePosting]);
+
+  /** "View saved record": leave the form and open that job in the saved list. */
+  const onViewDuplicate = useCallback((jobId: string) => {
+    setDupCheck(null);
+    setCreating(false);
+    setEditingId(null);
+    setErrors([]);
+    setSelectedId(jobId);
+  }, []);
 
   // Start tracking an application for a saved job (Prompt 13). Reuses an
   // existing application for the same job (no accidental duplicates); the
@@ -629,12 +692,53 @@ export default function JobsPanel() {
                 <ul>{errors.map((e, i) => <li key={i}>{e}</li>)}</ul>
               </div>
             )}
+            {dupCheck !== null && (
+              <div className="duplicate-warning" role="alert" data-status={dupCheck.status}>
+                <p className="warn">{dupCheck.explanation}</p>
+                {dupCheck.matches.length > 0 && (
+                  <ul className="duplicate-matches">
+                    {dupCheck.matches.map((m) => (
+                      <li key={m.jobId}>
+                        <strong>{m.title}</strong>
+                        {m.company !== null && <span className="hint"> — {m.company}</span>}
+                        {m.originalUrl !== null && (
+                          <span className="hint">
+                            {' '}
+                            <a href={m.originalUrl} target="_blank" rel="noreferrer noopener">
+                              Saved posting
+                            </a>
+                          </span>
+                        )}
+                        <button type="button" onClick={() => onViewDuplicate(m.jobId)}>
+                          View saved record
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {dupCheck.status === 'possible' && (
+                  <p className="hint">
+                    Review the saved job before deciding: if this is a different vacancy, saving creates
+                    a separate record.
+                  </p>
+                )}
+                <p className="hint">
+                  Nothing is merged or overwritten. Saving anyway adds a new, separate record.
+                </p>
+              </div>
+            )}
           </Section>
           <footer className="options-footer">
             <button type="button" onClick={cancel}>Cancel</button>
-            <button type="button" className="primary" onClick={() => void onSave()}>
-              {editingId ? 'Update posting' : 'Save posting'}
-            </button>
+            {dupCheck !== null ? (
+              <button type="button" className="primary" onClick={onSaveAnyway}>
+                Save as a separate record
+              </button>
+            ) : (
+              <button type="button" className="primary" onClick={() => void onSave()}>
+                {editingId ? 'Update posting' : 'Save posting'}
+              </button>
+            )}
           </footer>
         </>
       )}
