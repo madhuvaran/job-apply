@@ -18,9 +18,10 @@ record, **not** a Workday adapter and **not** a claim of site-specific support.
 | **Inferred** | Follows from standard HTML/ARIA form semantics, not from a real site. |
 | **Unverified Workday behavior** | Requires a permitted real Workday test environment; **not** established here. |
 
-Fixtures and tests live in `src/lib/autofill/workday.test.ts` (plus the earlier
-`classify.test.ts`, `plan.test.ts`, `execute.test.ts`, `hardening.test.ts`,
-`page.test.ts`, `session.test.ts`, `boundaries.test.ts`).
+Fixtures and tests live in `src/lib/autofill/workday.test.ts` and
+`src/lib/autofill/detection.test.ts` (plus the earlier `classify.test.ts`,
+`plan.test.ts`, `execute.test.ts`, `hardening.test.ts`, `page.test.ts`,
+`session.test.ts`, `boundaries.test.ts`).
 
 ## Interaction invariants (unchanged)
 
@@ -32,9 +33,16 @@ Fixtures and tests live in `src/lib/autofill/workday.test.ts` (plus the earlier
 - No network requests, AI provider calls, telemetry, or external services.
 - No new host or manifest permissions; content-script matches unchanged
   (`storage`, `activeTab`, `scripting` only).
+- Password/authentication controls are excluded by their own `type=password`
+  **and** by label/name/placeholder text (Prompt 22), so an innocuous label can
+  never make a password box fillable.
 - Sensitive answers stay separate from AI-safe profile data.
 - Errors/reports never contain saved answers or current field values.
 - Multi-select controls remain unsupported.
+- **A control that already contains a value is never overwritten** (Prompt 22):
+  typed text/textarea content, a real (non-placeholder) selected option, or an
+  already-answered radio group is left exactly as it is and reported
+  `already-filled` — no write, no events.
 
 ## Status matrix
 
@@ -54,6 +62,12 @@ Fixtures and tests live in `src/lib/autofill/workday.test.ts` (plus the earlier
 | 12 | `<div role="combobox">` widget with no native control | **Unsupported** (not scanned) | — (not scanned by design) | n/a |
 | 13 | `<input list="…">` datalist combobox | **Partially supported / inferred** (treated as plain text; popup not driven) | — | Yes |
 | 14 | Site-specific JS / framework validation | **Unverified** | — | Yes |
+| 15 | `label[for]` / nested label / duplicate labels for one control | **Supported** | `detection.test.ts` | Yes |
+| 16 | `aria-labelledby` listing several ids (incl. duplicates/commas/missing ids) | **Supported** (malformed ids are skipped, never fatal) | `detection.test.ts` | Yes |
+| 17 | Explicit ARIA name **plus** a native `<label>` | **Supported** (both are captured; a conflict → ambiguous/manual) | `detection.test.ts` | Yes |
+| 18 | Control labelled only by its `fieldset`/`legend` group (incl. nested groups) | **Supported** (last-resort group context) | `detection.test.ts` | Yes |
+| 19 | Real label + a contradictory `placeholder` | **Supported** (placeholder is only a lower-confidence fallback) | `detection.test.ts` | Yes |
+| 20 | Control that already contains a value (text, textarea, select, radio) | **Not modified** — `already-filled`, nothing written | `detection.test.ts` | n/a (skipped) |
 
 ## Per-pattern detail
 
@@ -67,8 +81,17 @@ state; a framework that later reverts them is not re-checked.
 
 ### 3–4. ARIA labels — Supported
 - `aria-label` is used as the accessible name fallback.
-- `aria-labelledby` is now resolved to the referenced element(s) text and used
-  as `labelText` (previously it was ignored — a real defect fixed in Prompt 16).
+- `aria-labelledby` is resolved to the referenced element(s) text (previously it
+  was ignored — a real defect fixed in Prompt 16).
+- **Prompt 22:** every id in the list is used (duplicates de-duplicated), tokens
+  are split on whitespace *and* commas, unresolvable/malformed ids are skipped
+  and the result is capped — a broken `aria-labelledby` degrades to "no ARIA
+  name", never to a crash.
+- **Prompt 22:** the ARIA name is captured even when a native `<label>` also
+  exists (it was previously discarded). `labelText` (visible label) and
+  `ariaLabel` (explicit ARIA name) are separate descriptor fields, so the
+  classifier sees **both**: agreement classifies normally, a conflict yields two
+  categories → **ambiguous → manual** (never a guess).
 *Limitation:* a label whose text lives outside the scanned document/frame is
 not resolved.
 
@@ -121,6 +144,32 @@ and is not filled; a replacement element with the same `id` is **not** written.
 ### 11. Multi-select — Unsupported
 `<select multiple>` returns `unsupported-element`; every selected option is left
 unchanged (the plan carries a single string answer). Preserved from Prompt 15.
+
+### 15–19. Label resolution order — Supported
+The descriptor carries a bounded, value-free string for each available source:
+visible `<label>` (`label[for]`, nested wrapper, `.labels`), explicit ARIA name
+(`aria-labelledby` → every referenced id, else `aria-label`), `placeholder`, and
+the nearest ancestor `fieldset`/`legend` (`groupLabel`). Precedence:
+
+1. `labelText` / `ariaLabel` — a real label always wins.
+2. `placeholder` — used for category detection **only** when there is no label
+   or ARIA name (it is still always consulted by the safety exclusions).
+3. `groupLabel` — the nearest ancestor legend, walking outward past a fieldset
+   that has no legend of its own and never picking up a nested group's legend;
+   used only when the control has no label, ARIA name or placeholder.
+
+*Demonstrated:* all of the above by `detection.test.ts` (synthetic fixtures).
+*Limitation:* group context can only identify a control when the group question
+names the field; a legend like "My Information" stays unsupported (manual).
+
+### 20. Existing values — never overwritten
+A control that already holds a value is **left exactly as it is** and reported
+`already-filled` (no write, no events): typed text/textarea content, a real
+(non-placeholder) selected `<select>` option, or a radio group with another
+option already chosen. Ambiguity/absence is still decided first, so an unmatched
+field keeps reporting the more specific `no-match`.
+*Limitation:* a dropdown or group whose page-supplied default is a real answer is
+reported `already-filled` rather than replaced — change it manually.
 
 ### 12–14. Remaining gaps
 `<div role="combobox">` widgets that contain no native `input`/`select`/`textarea`

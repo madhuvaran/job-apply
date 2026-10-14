@@ -74,6 +74,13 @@ export const fieldDescriptorSchema = z
     elementId: z.string().max(200).optional(),
     autocomplete: z.string().max(200).optional(),
     placeholder: z.string().max(300).optional(),
+    /**
+     * Nearest ancestor `<fieldset>` `<legend>` text (Prompt 22). A GROUP
+     * question, used only as a last-resort context for a control that has no
+     * label/ARIA name/placeholder of its own — never to override one. Value-free
+     * and bounded like every other label source.
+     */
+    groupLabel: z.string().max(300).optional(),
     /** Explicit ARIA `role` attribute (used to spot custom widgets, e.g. combobox). */
     role: z.string().max(60).optional(),
     /** Explicit `aria-haspopup` value (listbox/tree/grid indicate a selection widget). */
@@ -152,6 +159,11 @@ export const FILL_STATUSES = [
   'hidden',
   'unsupported-element',
   'no-match',
+  /**
+   * The control already held a value (typed content, a real selected option, or
+   * another radio option already chosen) — nothing was written (Prompt 22).
+   */
+  'already-filled',
   'verify-failed',
   'error',
 ] as const;

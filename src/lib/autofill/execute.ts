@@ -34,6 +34,11 @@
  *   planned state is left untouched (no unnecessary toggle, no event).
  * - Per-field messages are fixed literals; planned/page values never appear in
  *   a message or report.
+ * - NEVER OVERWRITE (Prompt 22): a control that already holds a value — typed
+ *   content in a text/textarea, a real (non-placeholder) option already selected
+ *   in a `<select>`, or another option already chosen in a radio group — is left
+ *   EXACTLY as it is and reported `already-filled` (no write, no events). The
+ *   existing value is read only to decide, and is never reported or logged.
  */
 import { normalizeText } from './classify';
 import {
@@ -63,6 +68,7 @@ const STATUS_MESSAGES: Record<FillStatus, string> = {
   hidden: 'Field is hidden.',
   'unsupported-element': 'Unsupported element type.',
   'no-match': 'No unambiguous matching option — left unchanged.',
+  'already-filled': 'Field already contains a value — left unchanged.',
   'verify-failed': 'The page did not accept the value — left unchanged.',
   error: 'Filling this field failed.',
 };
@@ -209,6 +215,11 @@ function fillTextLike(element: Element, plannedValue: string): FillStatus {
   if (!(element instanceof HTMLTextAreaElement) && !(element instanceof HTMLInputElement)) {
     return 'unsupported-element';
   }
+  // NEVER OVERWRITE: a control that already holds content (typed by the
+  // applicant, pre-filled by the page/framework, or restored by the site) is
+  // left EXACTLY as it is — no write, no events. Only an empty control is
+  // filled. The current value is never reported, logged or transmitted.
+  if (element.value.trim().length > 0) return 'already-filled';
   const previous = element.value;
   setNativeValue(element, plannedValue);
   // Verify BEFORE dispatching: a failed write must not emit change events, and
@@ -232,7 +243,14 @@ function fillSelect(element: Element, plannedValue: string): FillStatus {
       !isPlaceholderOption(option) &&
       (normalizeText(option.value) === target || normalizeText(option.textContent ?? '') === target),
   );
+  // Ambiguity/absence is decided FIRST, so an unmatched field still reports the
+  // more specific `no-match`.
   if (matches.length !== 1) return 'no-match';
+  // NEVER OVERWRITE: a real (non-placeholder) option is already selected — the
+  // dropdown already holds an answer, so it is left exactly as it is.
+  const current =
+    element.selectedIndex >= 0 ? (element.options[element.selectedIndex] as HTMLOptionElement | undefined) : undefined;
+  if (current !== undefined && !isPlaceholderOption(current)) return 'already-filled';
   const option = matches[0] as HTMLOptionElement;
   const previous = element.value;
   setNativeValue(element, option.value);
@@ -264,6 +282,9 @@ function fillRadio(element: Element, plannedValue: string): FillStatus {
   if (matches.length !== 1) return 'no-match';
   const chosen = matches[0] as HTMLInputElement;
   if (chosen.checked === true) return 'filled'; // already in the planned state — no write, no event
+  // NEVER OVERWRITE: another option in the group is already answered — the
+  // group holds a value, so it is left exactly as it is.
+  if (group.some((r) => r.checked)) return 'already-filled';
   chosen.checked = true;
   if (chosen.checked !== true) return 'verify-failed';
   if (group.some((r) => r !== chosen && r.checked)) return 'verify-failed';

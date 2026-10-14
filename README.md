@@ -405,7 +405,7 @@ The engine is split so each part is independently testable:
 | Module | Responsibility |
 |---|---|
 | `schemas.ts` | `.strict()` **value-free** field descriptors, the reviewed fill plan, and the per-field report |
-| `classify.ts` | deterministic classification from label / `aria-label` / `name` / `id` / `autocomplete` / input type |
+| `classify.ts` | deterministic classification from visible label / ARIA name / placeholder / `name` / `id` / `autocomplete` / input type / fieldset legend |
 | `plan.ts` | maps recognised fields to explicitly supported saved answers (missing answer → manual entry) |
 | `execute.ts` | isolated executor that applies **only** a validated plan |
 | `page.ts` | value-free form scanning + the content-script scan/fill messages |
@@ -425,7 +425,9 @@ The engine is split so each part is independently testable:
 | Work authorization | sensitive `legal.workAuthorization` — **choice fields only**, and only when not `undisclosed` |
 | Sponsorship | sensitive `legal.sponsorshipNeeded` (Yes/No) — **choice fields only** |
 
-**Never filled (excluded categories):** passwords/authentication, one-time and
+**Never filled (excluded categories):** passwords/authentication (an
+`input type="password"` control is excluded by its own type even when its label
+looks harmless), one-time and
 verification codes, payment/card/bank details, CAPTCHA/bot-detection,
 equal-opportunity & voluntary demographics (gender, race, veteran, disability,
 religion, sexual orientation, …), compensation/salary, and legal
@@ -434,13 +436,34 @@ declarations/consent/attestation. Generic labels ("Name", "Other", "Details",
 one category are left for manual entry with a typed reason.
 
 **How it works (user-confirmed, opt-in):** in the popup, *Autofill this
-application form* reads only form-control **metadata** (labels/name/id/
-autocomplete/type — never values), shows a review split into *Will fill* and
+application form* reads only form-control **metadata** (visible label, ARIA name,
+fieldset legend, `name`/`id`/`autocomplete`/type — never values), shows a review split into *Will fill* and
 *Needs manual input*, and fills **only after you click Confirm**. Cancel makes
 no changes. A completion summary reports counts, **not** the values. Select,
 radio and checkbox fields are filled only on an unambiguous match; disabled,
 read-only, hidden and detached fields are skipped. The form is never submitted
 and no navigation is triggered.
+
+**Label detection (Prompt 22):** every available label source is captured as a
+separate bounded, value-free string — `label[for]`, a nested `<label>`, and
+repeated labels for one control; the explicit ARIA name (`aria-labelledby` with
+*every* referenced id — duplicates, comma separators and unresolvable ids are
+handled without ever failing the scan — falling back to `aria-label`); the
+`placeholder`; and the nearest ancestor `fieldset`/`<legend>` group question
+(walking outward past a legend-less nested fieldset). Precedence is deliberate: a
+real label or ARIA name wins, a placeholder is only a lower-confidence fallback
+when no label exists, and the group question is used only when the control has no
+label, ARIA name or placeholder. If a visible label and an explicit ARIA name
+conflict, the field is reported **ambiguous → manual** rather than guessed, and a
+misleading label can never unlock a sensitive field (the safety exclusions always
+see every signal, including the placeholder and the group legend).
+
+**Never overwritten:** a field that already contains a value — typed text or
+textarea content, a real (non-placeholder) selected dropdown option, or a radio
+group with another option already answered — is left **exactly as it is** and
+reported `already-filled` (no write, no events, and the existing value never
+appears in any message or report). Only empty fields are filled; ambiguity is
+still reported first, so an unmatched field keeps the more specific `no-match`.
 
 **Reliability (hardened):** text/textarea/select values are written through the
 element's **native value setter** — not any instance-level setter a framework

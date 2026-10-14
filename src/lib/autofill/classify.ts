@@ -20,6 +20,13 @@
  *    or `aria-haspopup` listbox/tree/grid) are left for MANUAL entry: the
  *    deterministic engine cannot open a popup or pick an option without
  *    clicking arbitrary page elements. A NATIVE `<select>` is unaffected.
+ * 7. A `placeholder` is only a LOWER-CONFIDENCE fallback (Prompt 22): when the
+ *    control has a real label or ARIA name, the placeholder does not create a
+ *    competing category. It still feeds the safety exclusions, so a misleading
+ *    label can never unlock a sensitive field.
+ * 8. Fieldset/legend context is a LAST RESORT, used only when the control has no
+ *    label, ARIA name or placeholder of its own — a group question never
+ *    overrides a per-control label.
  */
 import type { FieldCategory, FieldClassification, FieldDescriptor } from './schemas';
 
@@ -68,7 +75,11 @@ interface Exclusion {
 const EXCLUSIONS: Exclusion[] = [
   {
     reason: 'Password and authentication fields are never filled.',
-    test: (_d, c) =>
+    // The control's OWN type is checked first (Prompt 22): a `type=password`
+    // control with an innocuous label/placeholder is still never filled, even
+    // though a deceptive label might otherwise look like a supported category.
+    test: (d, c) =>
+      (d.inputType ?? '').toLowerCase() === 'password' ||
       /\bpassword\b|\bpasscode\b|\bpassphrase\b|\bpin\b|\busername\b|\buser name\b|\blogin\b|\blog in\b|\bsign in\b|\bsignin\b|\bauthenticat/.test(
         c,
       ),
@@ -158,22 +169,69 @@ export function isCustomSelectionWidget(descriptor: FieldDescriptor): boolean {
 const CHOICE_CATEGORIES = new Set<FieldCategory>(['state', 'country', 'workAuthorization', 'sponsorship']);
 
 function primaryLabel(descriptor: FieldDescriptor): string {
-  return normalizeText(descriptor.labelText ?? descriptor.ariaLabel ?? descriptor.placeholder ?? '');
+  return normalizeText(
+    descriptor.labelText ??
+      descriptor.ariaLabel ??
+      descriptor.placeholder ??
+      descriptor.groupLabel ??
+      '',
+  );
 }
 
+/** The control's own label/ARIA name (never a value, never group context). */
+function ownLabel(descriptor: FieldDescriptor): string | undefined {
+  return descriptor.labelText ?? descriptor.ariaLabel;
+}
+
+/**
+ * Fieldset/legend context (Prompt 22) is a LAST-RESORT signal: it is only
+ * consulted for a control that has no label, ARIA name or placeholder of its
+ * own, so a group question can never override a per-control label. Bounded and
+ * value-free — the page scan never persists or transmits it.
+ */
+function groupContext(descriptor: FieldDescriptor): string | undefined {
+  if (ownLabel(descriptor) !== undefined || descriptor.placeholder !== undefined) return undefined;
+  return descriptor.groupLabel;
+}
+
+function joinCorpus(parts: Array<string | undefined>): string {
+  return normalizeText(parts.filter((v): v is string => typeof v === 'string' && v.length > 0).join(' '));
+}
+
+/**
+ * SAFETY corpus — EVERY signal, including the placeholder. Used by the
+ * exclusions, so a misleading label can never unlock a sensitive field (e.g. a
+ * label of "First name" with a placeholder of "Enter your password").
+ */
 function buildCorpus(descriptor: FieldDescriptor): string {
-  return normalizeText(
-    [
-      descriptor.labelText,
-      descriptor.ariaLabel,
-      descriptor.placeholder,
-      descriptor.name,
-      descriptor.elementId,
-      descriptor.autocomplete,
-    ]
-      .filter((v): v is string => typeof v === 'string' && v.length > 0)
-      .join(' '),
-  );
+  return joinCorpus([
+    descriptor.labelText,
+    descriptor.ariaLabel,
+    descriptor.placeholder,
+    descriptor.name,
+    descriptor.elementId,
+    descriptor.autocomplete,
+    groupContext(descriptor),
+  ]);
+}
+
+/**
+ * MATCH corpus — used for category detection. A placeholder is only a
+ * LOWER-CONFIDENCE fallback: when the control has a real label/ARIA name, its
+ * (often boilerplate or contradictory) placeholder hint is not allowed to
+ * create a competing category. Everything else, including legend context, is
+ * identical to the safety corpus.
+ */
+function buildMatchCorpus(descriptor: FieldDescriptor): string {
+  return joinCorpus([
+    descriptor.labelText,
+    descriptor.ariaLabel,
+    ownLabel(descriptor) === undefined ? descriptor.placeholder : undefined,
+    descriptor.name,
+    descriptor.elementId,
+    descriptor.autocomplete,
+    groupContext(descriptor),
+  ]);
 }
 
 /** Candidate categories from strong attributes + word-bounded label patterns. */
@@ -216,6 +274,7 @@ function detectCategories(descriptor: FieldDescriptor, corpus: string): Set<Fiel
 /** Classify one descriptor. Deterministic and side-effect free. */
 export function classifyField(descriptor: FieldDescriptor): FieldClassification {
   const corpus = buildCorpus(descriptor);
+  const matchCorpus = buildMatchCorpus(descriptor);
   const label = primaryLabel(descriptor);
   const type = (descriptor.inputType ?? '').toLowerCase();
 
@@ -240,7 +299,7 @@ export function classifyField(descriptor: FieldDescriptor): FieldClassification 
     return { kind: 'ambiguous', reason: 'Sponsorship wording is ambiguous — left for manual entry.' };
   }
 
-  const categories = detectCategories(descriptor, corpus);
+  const categories = detectCategories(descriptor, matchCorpus);
 
   if (categories.size === 0) {
     if (label.length > 0 && GENERIC_LABELS.has(label)) {

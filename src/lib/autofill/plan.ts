@@ -147,9 +147,19 @@ function resolveValue(
   }
 }
 
+/**
+ * Human-readable label for the review list (shown only, never stored/logged).
+ * A real label/ARIA name wins, then a placeholder hint, then the fieldset group
+ * question (Prompt 22), and only then the raw `name`/`id` attribute value.
+ */
 function displayLabelFor(descriptor: FieldDescriptor, index: number): string {
   const label =
-    descriptor.labelText ?? descriptor.ariaLabel ?? descriptor.placeholder ?? descriptor.name ?? descriptor.elementId;
+    descriptor.labelText ??
+    descriptor.ariaLabel ??
+    descriptor.placeholder ??
+    descriptor.groupLabel ??
+    descriptor.name ??
+    descriptor.elementId;
   return (label ?? `Field ${index + 1}`).slice(0, 300);
 }
 

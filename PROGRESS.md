@@ -1,5 +1,112 @@
 # PROGRESS
 
+## Done (2026-10-14, task 27 / Prompt 22: deterministic detection + field coverage)
+Focused autofill-detection task. No Workday adapter, no AI change, no new
+permission, no dependency, no manifest/content-script change. Detection stays
+deterministic, offline and value-free.
+
+### Genuine gaps found (audited page.ts / classify.ts / plan.ts / execute.ts)
+1. **Explicit ARIA name discarded when a native label existed** — `associatedLabel`
+   resolved `aria-labelledby`/`aria-label` only when there was NO visible `<label>`,
+   so `<label for=e>Name</label><input id=e aria-labelledby=lbl>` lost the
+   referenced text entirely and stayed **ambiguous** (measured with a jsdom probe
+   before the fix).
+2. **Fragile `aria-labelledby` parsing** — duplicate ids were concatenated
+   ("Phone Phone"), comma-separated IDREF lists (common in the wild) resolved to
+   nothing, and a malformed token could make the whole attribute unusable.
+3. **No fieldset/legend context for non-radio controls** — an unlabelled control
+   inside `<fieldset><legend>Email address</legend>…` was **unsupported**, and
+   `fieldset.querySelector('legend')` could read a nested group's legend instead
+   of the nearest ancestor's (a control in a legend-less nested fieldset stayed
+   unsupported even though the outer group named it).
+4. **Placeholder treated as a peer signal** — a real label plus a boilerplate
+   placeholder (label "First name", placeholder "Enter your email address")
+   produced two categories → **ambiguous → manual**.
+5. **`type=password` not excluded by its own type** — a password box with an
+   innocuous label/placeholder was classified as a supported category and could
+   have been written to.
+6. **Existing values were overwritten** — the executor wrote the saved answer
+   without checking whether the control already held content (nothing enforced
+   the "never overwrite" rule, and the value-free review pane cannot show the
+   current page value).
+
+### Fixes (smallest change per gap)
+- **`src/lib/autofill/page.ts`** — new `ariaName()` (resolved `aria-labelledby`,
+  else the `aria-label` attribute) and `nativeLabel()` split out of
+  `associatedLabel()`; the explicit ARIA name is now captured on EVERY descriptor
+  (`ariaLabel`) even when a visible label exists. `referencedLabel()` splits on
+  whitespace **and** commas, de-duplicates ids, skips unresolvable/malformed ones
+  and caps the result. New `nearestLegend()` walks outward to the nearest ancestor
+  `<legend>` using only a fieldset's **direct-child** legend (never a nested
+  group's), exposed as the new value-free descriptor field `groupLabel`;
+  `radioGroupLabel()` uses it too.
+- **`src/lib/autofill/classify.ts`** — two corpora: the **safety** corpus still
+  contains EVERY signal (incl. placeholder and legend) so exclusions cannot be
+  bypassed by a misleading label; the **match** corpus (category detection) drops
+  the placeholder when a real label/ARIA name exists and uses the legend only when
+  the control has no label/ARIA name/placeholder of its own. The password
+  exclusion additionally checks the control's own `type`. Module header documents
+  rules 7–8.
+- **`src/lib/autofill/schemas.ts`** — new optional, bounded (300) `groupLabel`
+  descriptor field (strict schema kept) and the new `already-filled` fill status.
+- **`src/lib/autofill/execute.ts`** — **never overwrite**: an `input`/`textarea`
+  with non-empty content, a `<select>` whose current selection is a real
+  (non-placeholder) option, or a radio group with another option already chosen is
+  left exactly as it is and reported `already-filled` (no write, no events, message
+  never contains the value). Ambiguity is still resolved FIRST, so an unmatched
+  field keeps `no-match`; placeholder-selected selects, empty fields, unchecked
+  radios/checkboxes and multi-selects behave exactly as before.
+- **`src/lib/autofill/plan.ts`** — the review label falls back through real label
+  → ARIA name → placeholder → group legend → `name`/`id` (display only).
+
+### Tests — `src/lib/autofill/detection.test.ts` (new, **28 tests**, jsdom)
+Covers requested cases 1–14: `label[for]`/nested/duplicate labels; `aria-label`;
+multi-id, duplicated, comma-separated and missing `aria-labelledby` ids;
+ARIA-name-plus-native-label (regression for gap 1); conservative ambiguity when
+the two conflict; legend context (nested groups; never overriding an owned
+label/placeholder); placeholder precedence (fallback only, still feeds safety
+exclusions, plus the `type=password` case); duplicate labels staying independent
+(each filled via the real session); dynamic controls discovered by a fresh scan
+(old token rejected `stale-session`, new scan fills the added field);
+oversized/malformed markup (300-char cap, duplicate ids, dangling `label[for]`,
+empty legend) never throwing; sensitive/legal/compensation/EEO exclusions intact
+despite misleading labels and group context; existing-value + hidden/disabled/
+read-only ineligibility in one pass; zero network/provider calls across
+scan→plan→fill (value-free descriptor JSON asserted); per-field
+`requiresConfirmation` and the scan-token requirement intact. Already-covered
+behaviours were deliberately NOT duplicated (see the file header).
+
+### Commands run this task (exit statuses captured)
+- `npx vitest run` → **exit 0, 711/711 passed** (44 files; 683 baseline + 28 new)
+- `npm run compile` → **exit 0**
+- `npm run build` → **exit 0**; built manifest unchanged:
+  `permissions = ["storage", "activeTab", "scripting"]`, no `host_permissions`,
+  content-script matches still `*://*.google.com/*`
+
+### Verified vs unverified
+- **Verified:** jsdom unit tests only (synthetic fixtures). No real browser, no
+  live site, and **no Workday environment** was used — nothing here claims
+  complete Workday support.
+- **Inferred:** standard HTML/ARIA semantics of the fixtures.
+
+### Limitations / known issues
+- Detection is still label/attribute based: a group legend only identifies a field
+  when the question names it ("My Information" stays manual), and
+  `<div role="combobox">` widgets with no native control are still never scanned.
+- "Never overwrite" means a page-supplied default answer (a real option preselected
+  in a dropdown, an already-answered radio group) is reported `already-filled`
+  rather than replaced — the user changes it manually.
+- If a visible label and an explicit ARIA name disagree, the field stays manual.
+- No real-browser/framework-render verification (same jsdom boundary as every
+  previous autofill task).
+
+### Next
+- Prompt 23 was not started. Remaining work: a permitted real-browser/Workday test
+  environment to upgrade the unverified compatibility rows, and live provider
+  wiring for AI mapping (a separate, explicitly scoped task).
+
+---
+
 ## Done (2026-10-14, task 26 / Prompt 21: real-browser verification of the PDF and DOCX exports)
 Verification-only task — **no product feature, no dependency, no Prompt 22 work,
 no source change (repo diff = this file only).** Executed an automated
