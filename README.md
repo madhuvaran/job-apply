@@ -51,8 +51,9 @@ tabs; everything is stored **locally** via `chrome.storage.local`:
   posting or settings inputs change; missing profile, missing job, invalid
   input and insufficient data each show an honest message instead of a
   misleading number. The resume section under a selected job downloads a
-  tailored PDF or explicitly saves a fixed snapshot to the local **resume
-  version history** (see below); the history list is always visible under it.
+  tailored **PDF or Word (.docx)** file, or explicitly saves a fixed snapshot
+  to the local **resume version history** (see below); the history list is
+  always visible under it.
 
 ## Capture current job (popup)
 
@@ -234,6 +235,55 @@ scripts are refused rather than transliterated; there is no in-page PDF
 bundled custom fonts. Nothing claims the PDF will pass a specific employer's
 ATS.
 
+## Resume Word (.docx) export (ATS-friendly, no AI)
+
+`src/lib/resume/docx/` renders the SAME strictly validated `TailoredResume`
+payload to a Microsoft Word-compatible `.docx` (Office Open XML) file. It is a
+presentation layer only: it never invents, paraphrases or drops content, and it
+renders no field outside the resume schema (no contact details, evidence ids,
+relevance/selection metadata or job text). Content **and section order** come
+from the same source as the PDF (`buildBlocks`), so both formats say the same
+thing.
+
+Packaging uses **`fflate`** (MIT, ~8 KB, zero dependencies, browser + Node) as
+the ZIP container writer — a `.docx` is a ZIP package and the project had no
+way to write one. A full DOCX-generation library was deliberately not used: it
+would embed hidden document metadata (creator, application, creation time) and
+a generation timestamp, and would hide the OOXML we want to keep explicitly
+ATS-safe.
+
+- **Structure:** one column of ordinary paragraphs — no tables, text boxes,
+  columns, drawings, shapes or hyperlinks. Section headings are real outline
+  headings, bullets use a real Word list definition, and the page is A4 portrait
+  with 2 cm margins in Arial.
+- **Text:** punctuation and Unicode are preserved verbatim (the package is
+  UTF-8), unlike the PDF's Latin-1 fonts. Every value is XML-escaped rather than
+  concatenated into markup, and text containing characters XML 1.0 cannot
+  represent is refused with a typed error (reporting only `U+XXXX` code points)
+  instead of writing a corrupted file.
+- **Determinism:** identical input produces a **byte-identical** package — ZIP
+  entry timestamps are pinned to a fixed local constant (so the bytes match in
+  every timezone), entries are stored uncompressed, and no `docProps` metadata
+  part is written at all. The file therefore carries **no hidden metadata** and
+  no "generated at" time.
+- **Filenames:** `resume-<job-title-slug>-tailored.docx`, falling back to a
+  neutral `resume-tailored.docx` when the label has no usable characters.
+  Unsafe filename characters are stripped; no employer or job title is invented.
+
+In **Options → Jobs**, the resume section offers **Download tailored resume
+PDF** and **Download tailored resume DOCX**. Both are rendered from the *same*
+tailored result for the current profile + job — the DOCX export never calls the
+tailoring function a second time and never modifies the payload. If generation
+fails, a fixed, content-free message explains why and no file is written. No AI,
+no network, no storage writes; the sensitive profile is never read.
+
+Limitations: verification is **structural** (the package is unzipped and every
+part parsed as XML in tests) — no word processor was used, so nothing is claimed
+about how Microsoft Word, Google Docs or LibreOffice render or round-trip the
+file, and **no universal ATS compatibility is claimed**. There is no template,
+branding, font or layout customisation, no image/logo support and no page-count
+control.
+
 ## Tailored resume version history (local-only, no external service)
 
 In **Options → Jobs**, the resume section can **Save version to history**:
@@ -265,11 +315,12 @@ How it works:
 - **Open** — shows the version's job label, creation date, status and a
   count-only section summary (no resume body text is listed; there is no
   in-page PDF/resume preview in this build).
-- **Export** — renders the **stored snapshot** through the existing
-  `renderResumePdf`, so a historical PDF is exactly what that version
-  contained even after you edit your profile or the posting (verified by a
-  byte-identical test against `renderResumePdf(snapshot)`). It needs no loaded
-  profile.
+- **Export PDF / Export DOCX** — each renders the **stored snapshot** through
+  the existing `renderResumePdf` / DOCX writer, so a historical file is exactly
+  what that version contained even after you edit your profile or the posting
+  (verified by byte-identical tests against `renderResumePdf(snapshot)` and the
+  DOCX renderer). Neither needs a loaded profile, and both work when the
+  original job posting has been deleted (the version is kept as an orphan).
 - **Delete** — two-step confirmation that removes exactly the selected
   version; other versions and every other storage key are untouched.
 - **Integrity** — absent, malformed, unavailable and quota results are
@@ -491,7 +542,8 @@ download action (Prompt 12), the local application log + Options → Application
 tab (Prompt 13), the deterministic autofill foundation (Prompt 14), its
 reliability/safety hardening (Prompt 15), Workday-style compatibility discovery
 with a synthetic fixture set and matrix (Prompt 16), the opt-in AI-assisted
-field-mapping layer (Prompt 17), and the local tailored resume version history
-+ snapshot export (Prompt 19).
+field-mapping layer (Prompt 17), the local tailored resume version history
++ snapshot export (Prompt 19), and the ATS-friendly Word (.docx) resume export
+(Prompt 20).
 **Not yet built: a Workday adapter, live wiring of the AI provider endpoint, and
 the deeper application-form automation.**

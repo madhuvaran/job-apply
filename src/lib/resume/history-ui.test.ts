@@ -39,6 +39,7 @@ function render(overrides: Partial<ListProps> = {}): string {
       busy: false,
       onToggleOpen: () => {},
       onExport: () => {},
+      onExportDocx: () => {},
       onAskDelete: () => {},
       onCancelDelete: () => {},
       onConfirmDelete: () => {},
@@ -73,15 +74,18 @@ describe('ResumeVersionList', () => {
     const closed = render();
     expect(closed).toContain('>Open<');
     expect(closed).not.toContain('Export PDF');
+    expect(closed).not.toContain('Export DOCX');
     expect(closed).not.toContain('>Delete<');
     expect(closed).not.toContain('aria-expanded="true"');
 
     const open = render({ openId: 'rv-1' });
     expect(open).toContain('aria-expanded="true"');
     expect(open).toContain('Export PDF');
+    expect(open).toContain('Export DOCX');
     expect(open).toContain('>Delete<');
     // The other row stays closed.
     expect(open.match(/Export PDF/g)).toHaveLength(1);
+    expect(open.match(/Export DOCX/g)).toHaveLength(1);
   });
 
   it('requires an explicit confirmation before offering the destructive delete', () => {
@@ -125,6 +129,7 @@ describe('ResumeVersionList', () => {
   it('disables export and delete while a request is in flight', () => {
     const busy = render({ openId: 'rv-1', busy: true });
     expect(busy).toMatch(/<button[^>]*disabled[^>]*>Export PDF/);
+    expect(busy).toMatch(/<button[^>]*disabled[^>]*>Export DOCX/);
     expect(busy).toMatch(/<button[^>]*disabled[^>]*>Delete/);
     // Toggling open stays available.
     expect(busy).not.toMatch(/<button[^>]*disabled[^>]*>Close</);

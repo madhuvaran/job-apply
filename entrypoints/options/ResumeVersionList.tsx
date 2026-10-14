@@ -8,8 +8,8 @@
  * existing orphaned label and the version is kept. The destructive delete
  * control only appears inside an OPENED version and only behind
  * `confirmingDeleteId === entry.id`, so a delete always requires an explicit
- * confirmation step. Export is offered per opened version and always uses the
- * stored snapshot.
+ * confirmation step. PDF and Word (.docx) export are offered per opened version
+ * and always use the stored snapshot.
  */
 import {
   RESUME_HISTORY_STATUS_LABELS,
@@ -30,6 +30,8 @@ export interface ResumeVersionListProps {
   busy: boolean;
   onToggleOpen: (id: string) => void;
   onExport: (id: string) => void;
+  /** Word (.docx) export of the SAME stored snapshot. */
+  onExportDocx: (id: string) => void;
   onAskDelete: (id: string) => void;
   onCancelDelete: () => void;
   onConfirmDelete: (id: string) => void;
@@ -55,6 +57,7 @@ export default function ResumeVersionList({
   busy,
   onToggleOpen,
   onExport,
+  onExportDocx,
   onAskDelete,
   onCancelDelete,
   onConfirmDelete,
@@ -114,6 +117,9 @@ export default function ResumeVersionList({
                 <div className="resume-version-detail-actions">
                   <button type="button" disabled={busy} onClick={() => onExport(entry.id)}>
                     Export PDF
+                  </button>
+                  <button type="button" disabled={busy} onClick={() => onExportDocx(entry.id)}>
+                    Export DOCX
                   </button>
                   {confirmingDeleteId === entry.id ? (
                     <span className="application-confirm">

@@ -32,19 +32,23 @@ function render(profileProp: typeof profile | null): string {
 }
 
 describe('ResumeExport', () => {
-  it('offers download and an explicit save-to-history action when a profile is loaded', () => {
+  it('offers PDF and Word downloads plus an explicit save-to-history action when a profile is loaded', () => {
     const html = render(profile);
     expect(html).toContain('Download tailored resume PDF');
+    expect(html).toContain('Download tailored resume DOCX');
     expect(html).toContain('Save version to history');
     expect(html).toContain('Save version to history</button>');
-    // Saving is opt-in and explained as local-only.
+    // Both downloads come from one tailored result, and saving is opt-in and
+    // explained as local-only.
+    expect(html).toContain('same tailored result');
     expect(html).toContain('does not apply anywhere or change any application status');
   });
 
-  it('disables both actions and explains itself when no profile is saved', () => {
+  it('disables every action and explains itself when no profile is saved', () => {
     const html = render(null);
     expect(html).toContain('No saved profile yet');
     expect(html).toMatch(/<button[^>]*disabled[^>]*>Download tailored resume PDF/);
+    expect(html).toMatch(/<button[^>]*disabled[^>]*>Download tailored resume DOCX/);
     expect(html).toMatch(/<button[^>]*disabled[^>]*>Save version to history/);
   });
 

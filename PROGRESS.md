@@ -1,5 +1,102 @@
 # PROGRESS
 
+## Done (2026-10-14, task 24 / Prompt 20: ATS-friendly DOCX resume export)
+Adds a deterministic, ATS-friendly Word (`.docx`, Office Open XML) export of a
+tailored resume, alongside the existing PDF export. No Prompt 21 work, no other
+feature changes.
+
+### Acceptance criteria → where it is met
+- **Valid `.docx` from a validated `TailoredResume`** — `renderResumeDocx`
+  re-validates with the EXISTING strict `tailoredResumeSchema` (no competing
+  schema) and emits a minimal OOXML package (`[Content_Types].xml`,
+  `_rels/.rels`, `word/document.xml`, `word/_rels/document.xml.rels`,
+  `word/styles.xml`, `word/numbering.xml`). Tests unzip it and parse every part
+  as XML.
+- **Single-column, ATS-safe structure** — ordinary paragraphs only: no tables,
+  text boxes, columns, drawings/shapes or hyperlinks (asserted). Headings use
+  `w:outlineLvl`; bullets use a real Word list definition (`numbering.xml`), not
+  a typed character.
+- **Content + ordering preserved** — the document body is built from the SAME
+  `buildBlocks()` (src/lib/resume/pdf/layout.ts) the PDF renderer uses, so both
+  formats render identical text, headings and section order for one resume.
+  Nothing is invented, re-worded or dropped; posting provenance, ids and
+  relevance/selection annotations are never rendered.
+- **XML-safe encoding** — every value goes through `escapeXmlText`; text with
+  characters XML 1.0 cannot represent is refused with a typed
+  `unsupported-characters` result (reporting only `U+XXXX`) rather than writing
+  a corrupted package.
+- **No hidden metadata / no external links** — NO `docProps/*` part is emitted
+  at all (no creator, application, or creation/modification time) and link URLs
+  render as plain text, exactly like the PDF.
+- **Current-resume export** — the Options → Jobs section now offers *Download
+  tailored resume PDF* and *Download tailored resume DOCX*; both are rendered
+  from the SAME cached validated `TailoredResume` for the current profile + job.
+  The DOCX path never calls `tailorResume` on an existing result and never
+  mutates the payload. Safe filename
+  `resume-<job-title-slug>-tailored.docx` (characters outside `[a-z0-9]`
+  stripped, 60-char cap, neutral `resume-tailored.docx` fallback; no employer or
+  title invented); typed, content-free failure messages.
+- **Historical export** — each saved history version now has *Export DOCX* next
+  to *Export PDF*, both rendering that version's **saved snapshot** with no
+  profile/job read (the export function takes ONLY a `TailoredResume`). Orphaned
+  versions (job posting deleted) stay exportable; the snapshot, history entry
+  and application status are never mutated.
+- **Privacy** — the sensitive profile is never imported or read (source-scanned
+  in tests); strict-schema rejection stops any out-of-contract field (e.g. a
+  `contactEmail`/`sensitive` injection) from entering the document; no resume
+  content is logged; no network/AI call (fetch spies asserted).
+
+### New dependency (and why)
+- **`fflate@^0.8.3`** → `dependencies` (runtime, bundled). MIT, ~8 KB, ZERO
+  dependencies, browser + Node, ESM-first with proper types.
+  **Why needed:** a `.docx` IS a ZIP package and the project had no way to write
+  one. Used ONLY as the ZIP container writer.
+  **Why not a full DOCX library** (`docx`): it emits `docProps/core.xml` with
+  creator + creation/modification timestamps (hidden metadata this prompt
+  forbids) and packs with the current time (not byte-deterministic), and it
+  hides the OOXML we want to keep explicitly ATS-safe. `jszip` was also
+  rejected: its `export =` typings do not typecheck under this repo's
+  `verbatimModuleSyntax` config. The OOXML itself is authored by us, mirroring
+  how `pdf-lib` is used only as the low-level writer while `pdf/layout.ts` owns
+  all content.
+- No manifest/host permission, credential, API key or remote service was added;
+  no other dependency changed.
+
+### Files
+- **New:** `src/lib/resume/docx/xml.ts` (XML escaping + XML-1.0 character
+  validity), `document.ts` (OOXML parts + paragraph/heading/bullet mapping),
+  `render.ts` (validate → build → deterministic ZIP → Blob + safe filename),
+  `export.ts` (`downloadResumeDocx(snapshot)` — render + download, typed
+  failures), `index.ts` (public surface).
+- **New tests:** `docx/render.test.ts` (16), `docx/export.test.ts` (12).
+- **Changed:** `entrypoints/options/ResumeExport.tsx` (DOCX button + per-action
+  busy state; PDF flow otherwise unchanged), `ResumeVersionList.tsx`
+  (`onExportDocx` prop + *Export DOCX* action), `ResumeHistory.tsx` (shared
+  PDF/DOCX export handler), `README.md`, `PROGRESS.md`, `package.json`,
+  `package-lock.json`, and the two UI test files (new prop + DOCX assertions).
+
+### Commands run this task (exit statuses captured inline)
+- `npx vitest run` → **exit 0, 662/662 passed** (42 files; 634 baseline + 28 new)
+- `npm run compile` → **exit 0**
+- `npm run build` → **exit 0**
+
+### Limitations / not verified
+- **No word processor was used.** Verification is structural (in-memory ZIP
+  inspection + XML parsing of every part). How Microsoft Word, Google Docs or
+  LibreOffice render or round-trip the file is **not** verified, and no
+  universal ATS compatibility is claimed.
+- Layout is fixed: no templates, branding, fonts, logos/images or page-count
+  control. A long resume simply flows onto further pages.
+- ZIP entries are stored (uncompressed), so the file is larger than a
+  DEFLATE-compressed DOCX; this is deliberate (byte-determinism, no compressor).
+- The DOCX export is unit-tested only — it was **not** included in the
+  Prompt 19 real-browser harness (that harness covered the history UI/PDF).
+
+### Next
+- Prompt 21 is out of scope for this task.
+
+---
+
 ## Done (2026-10-14, task 23 / Prompt 19 follow-up: real-browser verification of the resume-history UI)
 Executed (not merely documented) an automated **real-browser** verification of
 Prompt 19's UI against a live `chrome.storage.local`, using a throwaway harness

@@ -6,8 +6,9 @@
  *   service (key `job-resume-history.v1`). No direct `chrome.storage`, no
  *   network, no AI, no sensitive profile.
  * - Saving happens only from the resume section's explicit button; this panel
- *   lists saved versions, opens one, exports its SAVED snapshot (never a
- *   re-tailored resume) and deletes — always behind a two-step confirmation.
+ *   lists saved versions, opens one, exports its SAVED snapshot as PDF or Word
+ *   (.docx) (never a re-tailored resume) and deletes — always behind a two-step
+ *   confirmation.
  * - Malformed history is NEVER overwritten: a malformed record shows a banner
  *   and requires an explicit "Discard malformed history" confirmation.
  * - A missing saved job is an orphaned reference only: the version is kept
@@ -21,6 +22,7 @@ import {
   type ResumeHistoryEntry,
 } from '../../src/lib/resume';
 import { downloadResumeSnapshot } from '../../src/lib/resume/pdf';
+import { downloadResumeDocx } from '../../src/lib/resume/docx';
 import { loadJobPostings, resetResumeHistory } from '../../src/lib/storage';
 import { Section } from './ui';
 import ResumeVersionList from './ResumeVersionList';
@@ -91,7 +93,7 @@ export default function ResumeHistory({ refreshToken = 0 }: ResumeHistoryProps) 
   }, []);
 
   const onExport = useCallback(
-    async (id: string) => {
+    async (id: string, format: 'pdf' | 'docx') => {
       if (busy) return;
       const entry = entries.find((e) => e.id === id);
       if (entry === undefined) {
@@ -102,15 +104,25 @@ export default function ResumeHistory({ refreshToken = 0 }: ResumeHistoryProps) 
       setError(null);
       setNotice(null);
       try {
-        // Renders the STORED snapshot — never re-tailors from the current profile.
-        const outcome = await downloadResumeSnapshot(entry.snapshot);
+        // Renders the STORED snapshot — never re-tailors from the current
+        // profile and never reads the current job posting.
+        if (format === 'pdf') {
+          const outcome = await downloadResumeSnapshot(entry.snapshot);
+          if (!outcome.ok) {
+            setError(outcome.message);
+            return;
+          }
+          setNotice(
+            `Saved version exported (${outcome.pageCount} page${outcome.pageCount === 1 ? '' : 's'}). Check your downloads.`,
+          );
+          return;
+        }
+        const outcome = await downloadResumeDocx(entry.snapshot);
         if (!outcome.ok) {
           setError(outcome.message);
           return;
         }
-        setNotice(
-          `Saved version exported (${outcome.pageCount} page${outcome.pageCount === 1 ? '' : 's'}). Check your downloads.`,
-        );
+        setNotice('Saved version exported as a Word document. Check your downloads.');
       } finally {
         setBusy(false);
       }
@@ -215,7 +227,8 @@ export default function ResumeHistory({ refreshToken = 0 }: ResumeHistoryProps) 
               confirmingDeleteId={confirmingDeleteId}
               busy={busy}
               onToggleOpen={onToggleOpen}
-              onExport={(id) => void onExport(id)}
+              onExport={(id) => void onExport(id, 'pdf')}
+              onExportDocx={(id) => void onExport(id, 'docx')}
               onAskDelete={setConfirmingDeleteId}
               onCancelDelete={() => setConfirmingDeleteId(null)}
               onConfirmDelete={(id) => void onConfirmDelete(id)}
