@@ -410,6 +410,74 @@ Behavior:
 - **Filter & sort** — filter by status and sort by last updated, application
   date (missing last) or date created; ordering is deterministic.
 
+## Job prioritization (freshness-aware, local)
+
+`src/lib/prioritization/` turns the data you already saved into a **review
+order**: `prioritizeJobs({ jobs, matches, applications, today,
+minMatchThreshold })` groups saved jobs into four categories and explains each
+decision. It is pure and local — it reads no storage, never touches the clock
+(the caller passes `today` as `YYYY-MM-DD`), never calls the network or an AI
+provider, never mutates its input and **never writes a priority back into
+storage**. Match estimates are reused exactly as `calculateJobMatch` produced
+them; nothing is re-scored here.
+
+**It does not know whether a posting is still open, how many people applied, or
+your chances of getting hired.** The match estimate and the freshness signal are
+reported as **separate** fields — there is deliberately no combined score and no
+probability claim anywhere in the result contract.
+
+### Categories (precedence: first match wins)
+
+| Category | Rule |
+|---|---|
+| `already-applied` | A **reliably linked** application record (its `jobId` equals the saved job's id) with a submitted/in-progress status (`applied`, `assessment`, `interview`, `offer`) or a closed outcome (`rejected`, `withdrawn`). `planned` alone is **not** a submission. |
+| `apply-first` | A valid, assessable match meets your configured minimum, the posting date is known and not in the future, the date is inside the freshness window, and no linked application is submitted. |
+| `good-match` | The match meets your minimum, but a freshness condition is missing (unknown posting date, or older than the window). The reason says which. |
+| `needs-review` | Insufficient/unknown match data, a match below your minimum, a future posting date, an unreadable application log, or unreadable settings. |
+
+### Freshness
+
+- Documented, conservative window: **7 calendar days** (`FRESHNESS_WINDOW_DAYS`).
+- Age is computed from **calendar dates** (UTC calendar parts), never elapsed
+  milliseconds — month, year, DST and leap-day boundaries are exact. A posting
+  dated today is age 0.
+- A **future** posting date is flagged `Future posting date — verify` and is
+  treated as `needs-review`, never as fresh — even with a perfect match score.
+- A **missing/unknown** posting date is never treated as recent (it cannot be
+  `apply-first`; it lands in `good-match` or `needs-review`).
+- Freshness never overrides a poor or unassessable match: a below-minimum or
+  insufficient score is `needs-review` regardless of how new the posting is.
+
+### Stable ordering (within a category)
+
+1. Known posting date, newest first — unknown dates **never** outrank known ones.
+2. Match score, highest first, when both jobs have valid numeric scores.
+3. Job id ascending as the final tie-breaker.
+
+The underlying saved-job order is never changed and no computed priority is
+persisted.
+
+### Fail-closed behavior
+
+Application records are matched **only** by `jobId` — never by company/title, and
+an unlinked record is never attached to a job. If the application log cannot be
+read (one malformed record is enough) or settings cannot be read, the affected
+signal becomes explicitly *unknown* and the job falls back to `needs-review` with
+a concise explanation; missing data is never treated as a good match.
+
+Options → Jobs renders this as a compact **Priority shortlist**: the four
+categories with counts, a selectable list per category (title/company, match
+estimate or an insufficient-data label, posting date or "Posting date unknown",
+application status when reliably known), short reasons per job, and a safe
+*Open posting* link (`target="_blank" rel="noreferrer noopener"`, only for a
+saved http(s) URL). Nothing is opened, submitted or filled automatically.
+
+Limitations: this is a local review order over saved data — no real-time job
+discovery, no listing-availability or applicant-count data, no ATS outcome
+claims, no navigation or automatic application submission, and no prioritization
+is written back to storage. Verification here is unit/`react-dom/server` level
+(no real job site was accessed).
+
 ## Autofill (deterministic foundation, no AI)
 
 `src/lib/autofill/` is the first, conservative autofill foundation. It fills
@@ -592,9 +660,10 @@ reliability/safety hardening (Prompt 15), Workday-style compatibility discovery
 with a synthetic fixture set and matrix (Prompt 16), the opt-in AI-assisted
 field-mapping layer (Prompt 17), the local tailored resume version history
 + snapshot export (Prompt 19), the ATS-friendly Word (.docx) resume export
-(Prompt 20), and optional **job posting-date** capture/display groundwork
-(Prompt 23 — an explicit published date only; no prioritization, expiry or
-freshness sorting yet).
-**Not yet built: a Workday adapter, live wiring of the AI provider endpoint, the
-deeper application-form automation, and the job-prioritization feature that this
-posting-date groundwork is for.**
+(Prompt 20), optional **job posting-date** capture/display groundwork (Prompt 23
+— an explicit published date only), and the **freshness-aware job prioritization
++ Options → Jobs priority shortlist** (Prompt 24 — four categories, a documented
+7-day freshness window, stable deterministic ordering; no expiry reminders, no
+notification, no combined score and nothing written back to storage).
+**Not yet built: a Workday adapter, live wiring of the AI provider endpoint, and
+the deeper application-form automation.**

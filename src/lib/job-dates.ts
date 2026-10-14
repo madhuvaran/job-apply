@@ -99,6 +99,21 @@ export function localCalendarDate(now: Date = new Date()): string {
 }
 
 /**
+ * Whole CALENDAR days from `earlier` to `later` (both real `YYYY-MM-DD`),
+ * computed in UTC from the calendar parts — so months, years, DST and leap days
+ * are handled exactly (never elapsed milliseconds). Returns `null` when either
+ * value is not a real calendar date.
+ */
+export function calendarDaysBetween(earlier: string, later: string): number | null {
+  if (!isRealCalendarDate(earlier) || !isRealCalendarDate(later)) return null;
+  const [ey, em, ed] = earlier.split('-').map(Number) as [number, number, number];
+  const [ly, lm, ld] = later.split('-').map(Number) as [number, number, number];
+  const from = Date.UTC(ey, em - 1, ed);
+  const to = Date.UTC(ly, lm - 1, ld);
+  return Math.round((to - from) / 86_400_000);
+}
+
+/**
  * A saved posting date in the user's local, readable format (e.g. `Oct 3, 2026`).
  * Built from the calendar parts at LOCAL midnight, so the displayed day always
  * matches the stored day. Invalid input is returned unchanged (never invented).

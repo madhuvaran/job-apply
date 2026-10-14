@@ -18,6 +18,14 @@
  * - Resume section (Prompts 12 & 19): download a tailored PDF, explicitly
  *   save a version to the local resume history, and manage saved versions
  *   (open / export snapshot / delete with confirmation) below.
+ * - Priority shortlist (Prompt 24): the saved jobs are grouped into
+ *   apply-first / good-match / needs-review / already-applied by the PURE
+ *   `prioritizeJobs()` module (`src/lib/prioritization`). This panel only
+ *   assembles its inputs — already-computed match estimates, the application
+ *   log and today's local calendar date — and never scores anything itself.
+ *   Unreadable inputs fail closed (the affected signal is shown as unknown and
+ *   a concise explanation appears); nothing is written back to storage and no
+ *   application is started, submitted or filled.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -27,8 +35,15 @@ import {
   validatePostingDraft,
   type JobPosting,
 } from '../../src/lib/job-posting';
-import { postedDateFieldValue } from '../../src/lib/job-dates';
+import { localCalendarDate, postedDateFieldValue } from '../../src/lib/job-dates';
+import { calculateJobMatch } from '../../src/lib/matching';
 import {
+  prioritizeJobs,
+  type PrioritizationOutcome,
+  type PriorityCategory,
+} from '../../src/lib/prioritization';
+import {
+  loadApplications,
   loadJobPostings,
   loadProfile,
   loadSettings,
@@ -47,9 +62,10 @@ import type { Profile } from '../../src/lib/profile';
 import { Row, Section } from './ui';
 import PostingDateLabel from './PostingDateLabel';
 import MatchSummary from './MatchSummary';
+import PriorityList from './PriorityList';
 import ResumeExport from './ResumeExport';
 import ResumeHistory from './ResumeHistory';
-import { startTrackingApplication } from '../../src/lib/applications';
+import { startTrackingApplication, type Application } from '../../src/lib/applications';
 
 interface FormState {
   title: string;
@@ -123,6 +139,12 @@ export default function JobsPanel() {
   const [profileState, setProfileState] = useState<'loading' | 'ready'>('loading');
   const [settings, setSettings] = useState<Settings | null>(null);
   const [settingsState, setSettingsState] = useState<'loading' | 'ready'>('loading');
+  // Priority shortlist (Prompt 24). The application log is loaded read-only:
+  // `null` means it could NOT be read (application status stays unknown and no
+  // job is called "already applied").
+  const [applications, setApplications] = useState<Application[] | null>(null);
+  const [applicationsState, setApplicationsState] = useState<'loading' | 'ready'>('loading');
+  const [priorityCategory, setPriorityCategory] = useState<PriorityCategory>('apply-first');
   // Resume version history (Prompt 19): bumped when a version is saved so the
   // history section below reloads without touching any other state.
   const [historyRefresh, setHistoryRefresh] = useState(0);
@@ -155,10 +177,20 @@ export default function JobsPanel() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const [profileRes, settingsRes] = await Promise.all([loadProfile(), loadSettings()]);
+      const [profileRes, settingsRes, applicationsRes] = await Promise.all([
+        loadProfile(),
+        loadSettings(),
+        loadApplications(),
+      ]);
       if (cancelled) return;
       setProfile(profileRes.ok ? profileRes.data : null);
       setProfileState('ready');
+      // `absent` = the log was never written → reliably empty. Anything else
+      // that is not readable (malformed/unavailable) fails closed to `null`.
+      setApplications(
+        applicationsRes.ok ? applicationsRes.data.applications : applicationsRes.reason === 'absent' ? [] : null,
+      );
+      setApplicationsState('ready');
       if (settingsRes.ok) {
         setSettings(settingsRes.data);
       } else if (settingsRes.reason === 'absent') {
@@ -316,6 +348,40 @@ export default function JobsPanel() {
     [postings, selectedId],
   );
 
+  // Priority shortlist inputs (Prompt 24): reuse the ALREADY-COMPUTED match
+  // estimates for every saved job and hand them, the application log, the
+  // configured minimum and today's LOCAL calendar date to the pure module.
+  // Matching is never re-implemented here, no score is invented, and an
+  // unreadable input (`null`) makes the module fail closed instead of guessing.
+  const priorityOutcome = useMemo<PrioritizationOutcome>(() => {
+    const matches =
+      profile === null || settings === null
+        ? []
+        : postings.map((job) => ({
+            jobId: job.id,
+            result: calculateJobMatch(profile, job, settings),
+          }));
+    return prioritizeJobs({
+      jobs: postings,
+      matches,
+      applications,
+      today: localCalendarDate(),
+      minMatchThreshold: settings === null ? null : settings.minMatchThreshold,
+    });
+  }, [postings, profile, settings, applications]);
+
+  // Extra, panel-known context the pure module cannot see: a missing profile
+  // means no estimate exists at all, so every job must fall back to review.
+  const priorityNotes = useMemo(
+    () =>
+      profile === null
+        ? [
+            'No usable master profile is loaded, so no match estimate exists — every saved job falls back to needs review. Add or repair your profile on the Profile tab.',
+          ]
+        : [],
+    [profile],
+  );
+
   return (
     <div className="jobs-panel">
       {loadState === 'loading' && <div className="banner banner-info">Loading jobs…</div>}
@@ -389,6 +455,30 @@ export default function JobsPanel() {
                 </div>
               </div>
             ))}
+          </Section>
+          <Section title="Priority shortlist">
+            {loadState === 'loading' ||
+            profileState === 'loading' ||
+            settingsState === 'loading' ||
+            applicationsState === 'loading' ? (
+              <p className="hint">Loading prioritization inputs…</p>
+            ) : loadState !== 'ready' ? (
+              <p className="hint">
+                Saved jobs could not be loaded, so no prioritization is shown. Nothing was changed.
+              </p>
+            ) : priorityOutcome.kind === 'invalid' ? (
+              <div className="banner banner-error" role="alert">
+                Prioritization is unavailable: {priorityOutcome.issues.join('; ')}. Nothing was
+                changed.
+              </div>
+            ) : (
+              <PriorityList
+                result={priorityOutcome.result}
+                selected={priorityCategory}
+                onSelect={setPriorityCategory}
+                extraNotes={priorityNotes}
+              />
+            )}
           </Section>
           {selectedPosting !== undefined && (
             <>

@@ -294,3 +294,28 @@ select { max-width: 220px; }
 .resume-version-details .hint { margin: 0; }
 .resume-version-detail-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .resume-version-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* Priority shortlist (Prompt 24). Match estimate, freshness and application
+   status are shown as three SEPARATE pills — deliberately no combined score. */
+.priority { display: flex; flex-direction: column; gap: 8px; }
+.priority .hint { margin: 0; }
+.priority-notes { list-style: disc; margin: 0; padding-left: 20px; }
+.priority-categories { display: flex; flex-wrap: wrap; gap: 6px; }
+.priority-categories button[aria-pressed='true'] { border-color: #2563eb; }
+.priority-group { border: 1px solid #eef0f4; border-radius: 8px; padding: 10px 12px; }
+.priority-group h4 { margin: 0 0 4px; }
+.priority-jobs { list-style: none; margin: 8px 0 0; padding: 0; }
+.priority-jobs > li {
+  border-top: 1px solid #eef0f4; padding: 8px 0;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.priority-jobs > li:first-child { border-top: none; }
+.priority-job-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.priority-signals { display: flex; flex-wrap: wrap; gap: 6px; }
+.priority-signal {
+  background: #f3f4f6; color: #374151; border-radius: 999px; padding: 2px 8px; font-size: 0.8rem;
+}
+.priority-signal[data-field='match'] { background: #eef2ff; color: #3730a3; }
+.priority-signal[data-field='freshness'] { background: #ecfdf5; color: #065f46; }
+.priority-signal[data-field='application'] { background: #fef3c7; color: #92400e; }
+.priority-reasons { list-style: disc; margin: 0; padding-left: 20px; }

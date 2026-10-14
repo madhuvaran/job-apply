@@ -1,5 +1,125 @@
 # PROGRESS
 
+## Done (2026-10-14, task 29 / Prompt 24: freshness-aware job prioritization + priority shortlist)
+One focused, local feature: turn ALREADY-SAVED data (saved jobs, published
+posting dates, deterministic match estimates, the application log) into a review
+order with an explanatory UI. No new dependency, permission or manifest change,
+no scraping/polling, no AI/network, no write-back to storage, no automatic
+navigation/submission, and no claim about whether a job is open, how many people
+applied, or the odds of being hired.
+
+### Pure module — `src/lib/prioritization/` (new)
+- **`schemas.ts`** — strict result contract: `PRIORITY_SCHEMA_VERSION`,
+  `FRESHNESS_WINDOW_DAYS = 7`, `MAX_PRIORITY_JOBS = 1000`, ordered
+  `PRIORITY_CATEGORIES` (`apply-first`, `good-match`, `needs-review`,
+  `already-applied`) with fixed `PRIORITY_CATEGORY_META` labels/descriptions, and
+  `.strict()` match/freshness/application/entry/group/result schemas with bounded
+  strings + `validatePrioritizationResult()` (issues are path+code only). **No
+  combined score field exists anywhere** — the three signals stay separate.
+- **`prioritize.ts`** — `prioritizeJobs({ jobs, matches, applications, today,
+  minMatchThreshold })`: validates saved jobs with the EXISTING `jobPostingSchema`
+  (invalid records are skipped and counted, never classified), validates each
+  already-computed result with the EXISTING `validateMatchResult` (a
+  `JobMatchOutcome` wrapper is also accepted — nothing is re-scored), validates
+  application records with the EXISTING `applicationSchema`, and takes an
+  EXPLICIT `today`. No storage, no clock, no network, no AI, no input mutation;
+  posting URLs are re-validated through the existing `postingUrlSchema`.
+- **Categories (precedence, first match wins):** 1. `already-applied` for a
+  reliably linked record with a submitted/in-progress status (`applied`,
+  `assessment`, `interview`, `offer`) or a closed one (`rejected`, `withdrawn`) —
+  `planned` alone is NOT a submission; 2. unreadable application log →
+  `needs-review` (fail closed); 3. unusable/insufficient/below-minimum match →
+  `needs-review` (freshness never rescues it); 4. future posting date →
+  `needs-review` (verify, never fresh, even at score 100); 5. everything met →
+  `apply-first`; 6. otherwise → `good-match` (unknown or older posting date).
+- **Freshness:** calendar-day age from UTC calendar parts via the new pure
+  `calendarDaysBetween()` in `src/lib/job-dates.ts` (reused, not duplicated); age
+  0 = posted today; window is `<= 7`; future dates are flagged and never fresh;
+  unknown dates are never recent.
+- **Ordering (within a category):** known posting date newest first (unknown
+  dates never outrank known ones), then match score descending when both are
+  numeric, then `jobId` ascending. `comparePriorityEntries()` is exported and
+  tested directly; input order never changes the output.
+- **Fail-closed notes** (fixed literals, no job/page content): settings
+  unreadable, application log unreadable, one unreadable application record,
+  skipped invalid jobs, invalid match results, "minimum 0 disables threshold
+  filtering".
+- **`index.ts`** — public surface.
+
+### UI — Options → Jobs
+- **`entrypoints/options/PriorityList.tsx`** (new, presentational): four category
+  buttons with counts (`aria-pressed`), the selected category's jobs with
+  title/company, three separate signal pills (match label, freshness label,
+  application status), short reasons, and a safe *Open posting* link only when a
+  saved http(s) URL exists (`target="_blank" rel="noreferrer noopener"`). Empty
+  states for "no saved jobs" and for an empty category.
+- **`entrypoints/options/JobsPanel.tsx`**: loads the application log read-only
+  next to the profile/settings it already loaded (`ok` → records, `absent` →
+  reliably empty, anything else → `null` = unreadable), computes match estimates
+  with the EXISTING `calculateJobMatch` for every saved job, and memoizes the pure
+  `prioritizeJobs` call with `localCalendarDate()` as `today`. Shows a loading
+  line, a fail-closed line when saved jobs cannot be loaded, a typed error line
+  for an invalid outcome, and a panel-known extra note when no usable profile is
+  loaded (so every job falls back to review). Selection is local UI state; the
+  saved-jobs list, match summary, resume export and history are untouched.
+- **`entrypoints/options/style.css`**: `.priority*` styles (visually distinct
+  pills for match / freshness / application).
+
+### Tests (+82, all new)
+- **`src/lib/prioritization/prioritize.test.ts` (71)** — result contract (four
+  categories in order, counts/`totalJobs`, no combined score field, empty list,
+  URL safety incl. a `javascript:` record being skipped), every category and
+  precedence (already-applied over fresh+high score; future-dated `needs-review`;
+  below-minimum; insufficient data), application semantics (`planned` never
+  "already applied"; all seven statuses mapped; application date surfaced only
+  when recorded; unlinked records never associated; submitted beats planned;
+  tie-breaks), threshold boundaries (exactly at the minimum, one below, disabled
+  minimum 0, insufficient data never passing), freshness (0/1/7/8/10 days,
+  "Posted today", month boundary, year boundary, leap day 2024-02-29 with the
+  impossible 2023-02-29 rejected, unknown date never recent), stable ordering
+  (date → score → id, unknown last, input-order independence, no storage
+  reordering), fail-closed signals (unreadable log, one bad record, unreadable
+  settings, invalid/missing match, skipped invalid jobs, unusable match entries),
+  typed invalid outcomes (bad `today` values, impossible thresholds), an
+  integration case running the REAL `calculateJobMatch` (score reused verbatim;
+  fresh → `apply-first`, older → `good-match`, linked record → `already-applied`),
+  strict schema validation/unexpected-property rejection, determinism,
+  deep-frozen input immutability, clock independence (`vi.setSystemTime` changes
+  nothing), zero `fetch` calls, and a static guard that the module imports no
+  storage/AI module and never reads the clock.
+- **`src/lib/prioritization/priority-ui.test.ts` (11)** — `PriorityList` markup:
+  four category counts, the "cannot know availability/applicants/chances" notice,
+  selected category + only its jobs, three separate signals, insufficient-data and
+  "Posting date unknown" instead of a score, reasons, safe link (and no link
+  without one), module + panel notes, empty states; plus a `JobsPanel`
+  `react-dom/server` regression render (existing "Saved jobs"/"Add job manually"
+  markup plus the new "Priority shortlist" section and its loading state) with
+  `wxt/browser` mocked for module resolution.
+
+### Commands run this task (exit statuses captured inline)
+- `npx vitest run` → **exit 0, 834/834 passed** (48 files; 752 baseline + 82 new)
+- `npm run compile` (tsc --noEmit) → **exit 0**
+- `npm run build` (wxt build, chrome-mv3) → **exit 0** (manifest unchanged:
+  `storage`, `activeTab`, `scripting`; no host permissions)
+
+### Limitations / known issues
+- The priority view is a REVIEW ORDER over saved data: it makes no claim that a
+  posting is still open, that it has few applicants, or that applying will
+  succeed; there is no expiry reminder, notification, sorting of the saved-jobs
+  list, or write-back of any computed priority.
+- Application linkage is by `jobId` only (the existing relationship). If that
+  relationship is missing (unlinked/orphaned record, unreadable log) the status
+  stays explicitly unknown and the job cannot be `apply-first`.
+- Match estimates are only as good as the saved posting/profile data; a job with
+  no usable estimate is `needs-review` by design rather than guessed.
+- Verified at unit + `react-dom/server` level only: no real job site was accessed,
+  and no real-browser pass (clicking category buttons, opening a posting link) was
+  exercised.
+
+### Next
+- Prompt 25 (not started — this task stops here).
+
+---
 ## Done (2026-10-14, task 28 / Prompt 23: capture and display job posting dates)
 One focused feature: capture and display the ACTUAL posting date when a source
 explicitly publishes one. No prioritization dashboard, no expiry, no sorting by
