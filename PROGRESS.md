@@ -1,5 +1,92 @@
 # PROGRESS
 
+## Done (2026-10-14, task 25 / Prompt 20 follow-up: one tailored snapshot per export)
+Fixes a real double-tailoring bug in the current-resume workflow. No Prompt 21
+work, no new features, no new dependencies, no new permissions, no unrelated
+refactors.
+
+### The bug
+`entrypoints/options/ResumeExport.tsx` called `generateAndDownloadResume(profile,
+job)` (the PDF pipeline, which tailors internally) and THEN called
+`tailorResume(profile, job)` a second time to populate its cached `generated`
+result. The tailoring engine therefore ran twice for one PDF click, and the
+cached payload later used by DOCX and “Save version to history” was a second,
+independent tailoring rather than the exact result the PDF was rendered from.
+
+### The fix (smallest clean correction)
+- **`src/lib/resume/prepare.ts` (new)** — step 1: `prepareTailoredResume(profile,
+  job, tailor?)` tailors exactly ONCE into one strictly validated
+  `TailoredResume`, or returns a typed reason (`no-profile` / `insufficient` /
+  `invalid`). `prepareFailureMessage(reason, 'generated' | 'saved')` is the ONE
+  place holding the fixed, content-free failure text, preserving each action's
+  existing wording (PDF/DOCX say “generated”, save says “saved”). Imports no
+  PDF, DOCX or storage module, so nothing can re-render or re-read for a
+  failure.
+- **`src/lib/resume/pdf/export.ts`** — the render+download tail is now a single
+  private helper shared by all entry points, so `invalid` /
+  `unsupported-characters` / `render-failed` / `download-unavailable` and the
+  `U+XXXX`-only reporting exist once. NEW `downloadTailoredResumePdf(resume,
+  deps?)` renders/downloads an ALREADY-PREPARED current resume (snapshot in, no
+  tailoring, no profile/job read). `generateAndDownloadResume` keeps its public
+  interface, typed outcomes and messages and now delegates step 1 to
+  `prepareTailoredResume` (existing callers unchanged). `downloadResumeSnapshot`
+  (history / orphan-safe) is unchanged.
+- **`src/lib/resume/current-export.ts` (new)** — the testable orchestrator
+  `exportCurrentResume(action, inputs, deps)` for `'pdf' | 'docx' | 'save'`.
+  Steps are injectable (tailor, PDF, DOCX, save). It reuses `inputs.current`
+  when a snapshot already exists and only tailors when there is none, then
+  returns `{ ok: true, resume, notice }` carrying the SAME object it acted on so
+  the caller can cache it. No re-tailoring, no separate PDF/DOCX mapping, no
+  storage read, no network.
+- **`entrypoints/options/ResumeExport.tsx`** — all three buttons now call
+  `exportCurrentResume(action, { profile, job, current: generated })`; the
+  duplicated inline tailoring blocks are gone and the component holds only
+  React state. Button labels, notices, disabled states, filename behaviour,
+  privacy protections and history semantics are unchanged; the PDF message
+  (`Resume PDF generated (N page(s)). Check your downloads.`) and the save
+  wording are byte-identical to before.
+
+### Guarantees, tested by behaviour (not source text)
+`src/lib/resume/current-export.test.ts` (16 tests) injects the four steps:
+- exactly ONE tailoring call per PDF action, and **still one** across a
+  PDF → DOCX → Save sequence (`current` reused);
+- the SAME object (identity, not a copy) is passed to the PDF and DOCX
+  renderers, each receiving only the snapshot (no profile/job argument);
+- Save receives that exact snapshot plus the copied job label
+  (`{ id, title, company? }`);
+- a cached snapshot still exports with `profile: null` and a different posting
+  in scope (snapshot-only, like history) — the tailor is never called;
+- action-specific fixed failure text (no-profile / insufficient / invalid),
+  verbatim passthrough of render/download and history-save failures, no
+  success claim on failure, and no network calls.
+It also runs the REAL tailoring + PDF + DOCX engines end-to-end from one
+profile+job (only the browser download stubbed) and asserts both formats were
+handed the identical snapshot object.
+`src/lib/resume/pdf/export.test.ts` adds the `downloadTailoredResumePdf`
+behaviour (render happy path, payload not mutated, typed download failure,
+`U+XXXX`-only unsupported-character failure) and keeps the
+`generateAndDownloadResume` suite green. `resume-export-ui.test.ts` adds a
+source guard: the component imports the single-snapshot flow and no longer
+imports `tailorResume` / `generateAndDownloadResume` / `saveResumeVersion`.
+
+### Verification (raw exit codes, after the last file change)
+| Command | Exit | Result |
+|---|---|---|
+| `npx vitest run` | **0** | **683 passed / 43 files** (662/42 before → +21 tests) |
+| `npm run compile` | **0** | clean (`tsc --noEmit`) |
+| `npm run build` | **0** | built; manifest permissions still exactly `storage, activeTab, scripting`; no host permissions |
+
+### Not done / limitations
+- **No word processor was opened**, as before: rendering/round-tripping in Word
+  / Google Docs / LibreOffice stays unverified and no ATS compatibility is
+  claimed.
+- The DOCX (`current` and historical) buttons are still covered by
+  `react-dom/server` + orchestrator unit tests, not by the Prompt 19 real-browser
+  harness.
+- `generateAndDownloadResume` is no longer used by the Options UI (the
+  snapshot-based helper is); it is kept deliberately as a public,
+  backward-compatible entry point and stays covered by its own tests.
+
 ## Done (2026-10-14, task 24 / Prompt 20: ATS-friendly DOCX resume export)
 Adds a deterministic, ATS-friendly Word (`.docx`, Office Open XML) export of a
 tailored resume, alongside the existing PDF export. No Prompt 21 work, no other

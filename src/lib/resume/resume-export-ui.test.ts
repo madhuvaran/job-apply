@@ -4,6 +4,7 @@
  * `react-dom/server`: the explicit save control exists, is gated on a loaded
  * profile, and never claims an application was submitted. Synthetic fixtures.
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -68,5 +69,22 @@ describe('ResumeExport', () => {
       Object.assign(globalThis, { fetch: original });
     }
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Guardrail for the Prompt 20 follow-up (behaviour is covered by
+   * src/lib/resume/current-export.test.ts): the component must not own a
+   * second tailoring path. All three actions delegate to the one orchestrated
+   * flow, so the PDF action cannot tailor twice.
+   */
+  it('delegates every action to the single-snapshot export flow (no direct tailoring)', () => {
+    const source = readFileSync(new URL('../../../entrypoints/options/ResumeExport.tsx', import.meta.url), 'utf8');
+    expect(source).toContain("from '../../src/lib/resume/current-export'");
+    expect(source).toContain('exportCurrentResume');
+    expect(source).not.toMatch(/\btailorResume\b/);
+    expect(source).not.toMatch(/\bgenerateAndDownloadResume\b/);
+    expect(source).not.toMatch(/\bsaveResumeVersion\b/);
+    // The cached snapshot is handed back in, so later actions reuse it.
+    expect(source).toContain('current: generated');
   });
 });

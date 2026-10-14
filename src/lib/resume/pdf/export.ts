@@ -3,7 +3,8 @@
  * component so the whole flow is unit-testable without a browser.
  *
  * Order of operations (never fabricates a resume):
- * 1. `tailorResume` (Prompt 11) over the AI-safe profile + selected posting.
+ * 1. `prepareTailoredResume` (steps the Prompt 11 tailoring engine exactly
+ *    once) over the AI-safe profile + selected posting.
  * 2. Only on `ok`, `renderResumePdf` the strictly-validated payload.
  * 3. Only on a successful render, hand the Blob to the injected download
  *    helper (default: `downloadBlob`).
@@ -11,11 +12,20 @@
  * Every failure is a TYPED outcome with a fixed, safe message — profile/job
  * text is never included, and nothing is written to storage. Offline: no AI,
  * no network.
+ *
+ * Three exports share ONE render+download tail:
+ * - `generateAndDownloadResume` — the original tailor+render+download entry
+ *   point. Its public interface and behaviour are unchanged (existing callers
+ *   keep working).
+ * - `downloadTailoredResumePdf` — render+download an ALREADY-PREPARED current
+ *   resume, so the PDF action reuses the one validated snapshot instead of
+ *   tailoring a second time.
+ * - `downloadResumeSnapshot` — render+download a SAVED history version.
  */
 import type { Profile } from '../../profile';
 import type { JobPosting } from '../../job-posting';
 import type { TailoredResume } from '../schemas';
-import { tailorResume } from '../tailor';
+import { prepareFailureMessage, prepareTailoredResume } from '../prepare';
 import { renderResumePdf } from './render';
 import { downloadBlob, type DownloadEnvironment, type DownloadResult } from './download';
 
@@ -38,37 +48,33 @@ export interface ResumeExportDeps {
   environment?: DownloadEnvironment;
 }
 
-export async function generateAndDownloadResume(
-  profile: Profile | null,
-  job: JobPosting,
-  deps: ResumeExportDeps = {},
-): Promise<ResumeExportOutcome> {
-  if (profile === null) {
-    return {
-      ok: false,
-      reason: 'no-profile',
-      message: 'No saved profile is available yet — add your profile, then try again.',
-    };
-  }
+/** Failure reasons a saved-snapshot export can produce (no tailoring step). */
+export type SnapshotExportFailure =
+  | 'invalid'
+  | 'unsupported-characters'
+  | 'render-failed'
+  | 'download-unavailable';
 
-  const tailored = tailorResume(profile, job);
-  if (tailored.kind === 'insufficient') {
-    return {
-      ok: false,
-      reason: 'insufficient',
-      message:
-        'Your profile has no supported resume content yet (summary, skills, experience, projects, education, certifications or languages). Nothing was generated.',
-    };
-  }
-  if (tailored.kind === 'invalid') {
-    return {
-      ok: false,
-      reason: 'invalid',
-      message: 'The saved profile or job posting could not be validated, so no resume was generated.',
-    };
-  }
+export type SnapshotExportOutcome =
+  | { ok: true; pageCount: number; filename: string }
+  | { ok: false; reason: SnapshotExportFailure; message: string };
 
-  const rendered = await renderResumePdf(tailored.resume);
+/** Render-failure text for a resume generated for the CURRENT inputs. */
+const CURRENT_RENDER_FAILED_MESSAGE = 'The resume could not be rendered, so no file was created.';
+/** Render-failure text for a SAVED history version's snapshot. */
+const SNAPSHOT_RENDER_FAILED_MESSAGE = 'The saved resume version could not be rendered, so no file was created.';
+
+/**
+ * Shared render + download tail: render a validated payload and hand the Blob
+ * to the download helper. `renderFailedMessage` keeps each entry point's own
+ * wording while the logic (and the typed failure set) stays single-sourced.
+ */
+async function renderAndDownloadPdf(
+  resume: TailoredResume,
+  deps: ResumeExportDeps,
+  renderFailedMessage: string,
+): Promise<SnapshotExportOutcome> {
+  const rendered = await renderResumePdf(resume);
   if (!rendered.ok) {
     return {
       ok: false,
@@ -76,7 +82,7 @@ export async function generateAndDownloadResume(
       message:
         rendered.code === 'unsupported-characters'
           ? `Some profile text cannot be rendered in the PDF: ${rendered.issues.join(' ')}`
-          : 'The resume could not be rendered, so no file was created.',
+          : renderFailedMessage,
     };
   }
 
@@ -89,49 +95,53 @@ export async function generateAndDownloadResume(
   return { ok: true, pageCount: rendered.pageCount, filename: rendered.filename };
 }
 
-/** Failure reasons a saved-snapshot export can produce (no tailoring step). */
-export type SnapshotExportFailure =
-  | 'invalid'
-  | 'unsupported-characters'
-  | 'render-failed'
-  | 'download-unavailable';
+export async function generateAndDownloadResume(
+  profile: Profile | null,
+  job: JobPosting,
+  deps: ResumeExportDeps = {},
+): Promise<ResumeExportOutcome> {
+  const prepared = prepareTailoredResume(profile, job);
+  if (!prepared.ok) {
+    return {
+      ok: false,
+      reason: prepared.reason,
+      message: prepareFailureMessage(prepared.reason, 'generated'),
+    };
+  }
 
-export type SnapshotExportOutcome =
-  | { ok: true; pageCount: number; filename: string }
-  | { ok: false; reason: SnapshotExportFailure; message: string };
+  return renderAndDownloadPdf(prepared.resume, deps, CURRENT_RENDER_FAILED_MESSAGE);
+}
 
 /**
  * Export a SAVED resume version's snapshot (Prompt 19).
  *
- * Renders exactly the provided payload through the existing
- * `renderResumePdf` and hands the Blob to the download helper. It never
- * tailors, never reads the profile or a job posting and never touches
- * storage — so exporting a historical version uses its saved snapshot even
- * after the master profile or the posting has changed. Typed failures with
- * fixed, safe messages (no resume/profile text). Offline: no AI, no network.
+ * Renders exactly the provided payload through the existing `renderResumePdf`
+ * and hands the Blob to the download helper. It never tailors, never reads the
+ * profile or a job posting and never touches storage — so exporting a
+ * historical version uses its saved snapshot even after the master profile or
+ * the posting has changed. Typed failures with fixed, safe messages (no
+ * resume/profile text). Offline: no AI, no network.
  */
 export async function downloadResumeSnapshot(
   snapshot: TailoredResume,
   deps: ResumeExportDeps = {},
 ): Promise<SnapshotExportOutcome> {
-  const rendered = await renderResumePdf(snapshot);
-  if (!rendered.ok) {
-    return {
-      ok: false,
-      reason: rendered.code,
-      message:
-        rendered.code === 'unsupported-characters'
-          ? `Some profile text cannot be rendered in the PDF: ${rendered.issues.join(' ')}`
-          : 'The saved resume version could not be rendered, so no file was created.',
-    };
-  }
+  return renderAndDownloadPdf(snapshot, deps, SNAPSHOT_RENDER_FAILED_MESSAGE);
+}
 
-  const download =
-    deps.download ?? ((blob: Blob, filename: string) => downloadBlob(blob, filename, deps.environment));
-  const downloaded = download(rendered.blob, rendered.filename);
-  if (!downloaded.ok) {
-    return { ok: false, reason: 'download-unavailable', message: downloaded.message };
-  }
-
-  return { ok: true, pageCount: rendered.pageCount, filename: rendered.filename };
+/**
+ * Export the CURRENT tailored resume (Prompt 20 follow-up).
+ *
+ * Takes the ONE already-validated `TailoredResume` the current-resume flow
+ * prepared for the active profile + job and renders it — so the PDF action
+ * never calls the tailoring engine again, and the Word export and the explicit
+ * history save all operate on this exact same object. The payload is read-only
+ * input: it is not mutated. Typed failures with fixed, safe messages. No
+ * profile/job read, no storage write, no network.
+ */
+export async function downloadTailoredResumePdf(
+  resume: TailoredResume,
+  deps: ResumeExportDeps = {},
+): Promise<SnapshotExportOutcome> {
+  return renderAndDownloadPdf(resume, deps, CURRENT_RENDER_FAILED_MESSAGE);
 }

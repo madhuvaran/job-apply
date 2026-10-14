@@ -2,26 +2,23 @@
  * Resume PDF + DOCX export and save-version (Prompts 12, 19 & 20) — the
  * Options → Jobs resume section for the deterministic tailoring pipeline.
  *
- * All logic lives in testable helpers (`generateAndDownloadResume`,
- * `downloadResumeDocx`, `tailorResume`, `saveResumeVersion`); this component
- * only handles React state (busy / notice / error / the version generated for
- * the current inputs). It uses the AI-safe profile prop already loaded by the
- * Jobs panel (never the sensitive profile) and produces fixed, safe messages.
+ * All logic lives in one testable helper, `exportCurrentResume`
+ * (src/lib/resume/current-export.ts), which tailors the profile + job ONCE and
+ * then reuses that exact validated `TailoredResume` for the PDF, the Word
+ * export and the explicit history save. This component only handles React
+ * state (busy / notice / error / the snapshot generated for the current
+ * inputs), so the tailoring engine never runs twice for one action and the
+ * three actions can never diverge onto different payloads.
  *
- * ONE tailored result per profile + job: the validated `TailoredResume` is
- * cached in state and shared by the PDF export, the DOCX export, and "Save
- * version to history". The DOCX export therefore never calls `tailorResume`
- * itself and never alters the resume content — it renders exactly the payload
- * the other actions use (and the same one a successful PDF download produced).
- *
- * Saving is always EXPLICIT (a separate button), appends to local history
- * only, and never submits an application or changes any application status.
- * Offline: no AI, no network.
+ * It uses the AI-safe profile prop already loaded by the Jobs panel (never the
+ * sensitive profile) and produces fixed, safe messages. Saving is always
+ * EXPLICIT (a separate button), appends to local history only, and never
+ * submits an application or changes any application status. Offline: no AI,
+ * no network.
  */
 import { useEffect, useState } from 'react';
-import { generateAndDownloadResume } from '../../src/lib/resume/pdf';
-import { downloadResumeDocx } from '../../src/lib/resume/docx';
-import { saveResumeVersion, tailorResume, type TailoredResume } from '../../src/lib/resume';
+import { exportCurrentResume, type CurrentExportAction } from '../../src/lib/resume/current-export';
+import type { TailoredResume } from '../../src/lib/resume';
 import type { Profile } from '../../src/lib/profile';
 import type { JobPosting } from '../../src/lib/job-posting';
 
@@ -34,15 +31,16 @@ export interface ResumeExportProps {
 }
 
 /** Which action is in flight (keeps each button's own label honest). */
-type BusyAction = null | 'pdf' | 'docx' | 'save';
+type BusyAction = CurrentExportAction | null;
 
 export default function ResumeExport({ profile, job, onVersionSaved }: ResumeExportProps) {
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const busy = busyAction !== null;
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The version generated for the CURRENT profile + job (reused so every action
-  // operates on the same validated payload) and the one already saved from it.
+  // The ONE version generated for the CURRENT profile + job, reused so every
+  // later action operates on the same validated payload, and the one already
+  // saved from it.
   const [generated, setGenerated] = useState<TailoredResume | null>(null);
   const [saved, setSaved] = useState<TailoredResume | null>(null);
 
@@ -55,108 +53,25 @@ export default function ResumeExport({ profile, job, onVersionSaved }: ResumeExp
 
   const alreadySaved = generated !== null && saved === generated;
 
-  const onGenerate = async (): Promise<void> => {
+  // One handler for all three actions: the orchestrator tailors once (or
+  // reuses the cached snapshot) and returns the exact resume it used.
+  const run = async (action: CurrentExportAction): Promise<void> => {
     if (busy) return;
-    setBusyAction('pdf');
+    setBusyAction(action);
     setNotice(null);
     setError(null);
     try {
-      const outcome = await generateAndDownloadResume(profile, job);
-      if (outcome.ok) {
-        setNotice(
-          `Resume PDF generated (${outcome.pageCount} page${outcome.pageCount === 1 ? '' : 's'}). Check your downloads.`,
-        );
-        // Capture the exact deterministic payload for the DOCX/save actions.
-        if (profile !== null) {
-          const tailored = tailorResume(profile, job);
-          if (tailored.kind === 'ok') setGenerated(tailored.resume);
-        }
-      } else {
-        setError(outcome.message);
-      }
-    } finally {
-      setBusyAction(null);
-    }
-  };
-
-  // Word (.docx) export. Renders the SAME validated tailored result as the PDF
-  // flow — it is NOT tailored again here, and the payload is never modified.
-  const onDownloadDocx = async (): Promise<void> => {
-    if (busy) return;
-    setBusyAction('docx');
-    setNotice(null);
-    setError(null);
-    try {
-      let resume = generated;
-      if (resume === null) {
-        if (profile === null) {
-          setError('No saved profile is available yet — add your profile, then try again.');
-          return;
-        }
-        const tailored = tailorResume(profile, job);
-        if (tailored.kind === 'insufficient') {
-          setError(
-            'Your profile has no supported resume content yet (summary, skills, experience, projects, education, certifications or languages). Nothing was generated.',
-          );
-          return;
-        }
-        if (tailored.kind === 'invalid') {
-          setError('The saved profile or job posting could not be validated, so no resume was generated.');
-          return;
-        }
-        resume = tailored.resume;
-        setGenerated(resume);
-      }
-
-      const outcome = await downloadResumeDocx(resume);
+      const outcome = await exportCurrentResume(action, { profile, job, current: generated });
       if (!outcome.ok) {
         setError(outcome.message);
         return;
       }
-      setNotice('Word document generated. Check your downloads.');
-    } finally {
-      setBusyAction(null);
-    }
-  };
-
-  const onSaveVersion = async (): Promise<void> => {
-    if (busy) return;
-    setBusyAction('save');
-    setNotice(null);
-    setError(null);
-    try {
-      let resume = generated;
-      if (resume === null) {
-        if (profile === null) {
-          setError('No saved profile is available yet — add your profile, then try again.');
-          return;
-        }
-        const tailored = tailorResume(profile, job);
-        if (tailored.kind === 'insufficient') {
-          setError(
-            'Your profile has no supported resume content yet (summary, skills, experience, projects, education, certifications or languages). Nothing was saved.',
-          );
-          return;
-        }
-        if (tailored.kind === 'invalid') {
-          setError('The saved profile or job posting could not be validated, so no version was saved.');
-          return;
-        }
-        resume = tailored.resume;
-        setGenerated(resume);
+      setGenerated(outcome.resume);
+      setNotice(outcome.notice);
+      if (action === 'save') {
+        setSaved(outcome.resume);
+        onVersionSaved?.();
       }
-
-      const outcome = await saveResumeVersion({
-        resume,
-        job: { id: job.id, title: job.title, ...(job.company !== undefined ? { company: job.company } : {}) },
-      });
-      if (!outcome.ok) {
-        setError(outcome.message);
-        return;
-      }
-      setSaved(resume);
-      setNotice('Resume version saved to local history. Only this browser stores it.');
-      onVersionSaved?.();
     } finally {
       setBusyAction(null);
     }
@@ -169,7 +84,7 @@ export default function ResumeExport({ profile, job, onVersionSaved }: ResumeExp
         className="primary"
         disabled={busy || profile === null}
         aria-busy={busyAction === 'pdf'}
-        onClick={() => void onGenerate()}
+        onClick={() => void run('pdf')}
       >
         {busyAction === 'pdf' ? 'Generating PDF\u2026' : 'Download tailored resume PDF'}
       </button>
@@ -177,11 +92,11 @@ export default function ResumeExport({ profile, job, onVersionSaved }: ResumeExp
         type="button"
         disabled={busy || profile === null}
         aria-busy={busyAction === 'docx'}
-        onClick={() => void onDownloadDocx()}
+        onClick={() => void run('docx')}
       >
         {busyAction === 'docx' ? 'Generating DOCX\u2026' : 'Download tailored resume DOCX'}
       </button>
-      <button type="button" disabled={busy || profile === null || alreadySaved} onClick={() => void onSaveVersion()}>
+      <button type="button" disabled={busy || profile === null || alreadySaved} onClick={() => void run('save')}>
         {alreadySaved ? 'Version saved' : 'Save version to history'}
       </button>
       <span className="hint">

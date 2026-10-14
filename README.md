@@ -271,9 +271,17 @@ ATS-safe.
   Unsafe filename characters are stripped; no employer or job title is invented.
 
 In **Options → Jobs**, the resume section offers **Download tailored resume
-PDF** and **Download tailored resume DOCX**. Both are rendered from the *same*
-tailored result for the current profile + job — the DOCX export never calls the
-tailoring function a second time and never modifies the payload. If generation
+PDF** and **Download tailored resume DOCX**. One action tailors the profile +
+job **once** and every action shares that single validated result: the PDF and
+the Word file are rendered from the *same* object, and **Save version to
+history** stores that same object — so the PDF action can never tailor twice,
+no second content mapping exists for one format, and the three actions can
+never diverge onto different payloads. This is orchestrated by one testable
+helper (`exportCurrentResume` in `src/lib/resume/current-export.ts`) that keeps
+the four steps separate: tailor once → render/download the PDF from the
+snapshot → render/download the Word file from that snapshot → save that same
+snapshot only when the user asks. The snapshot is read-only: nothing mutates
+it, and a cached snapshot is reused instead of being regenerated. If generation
 fails, a fixed, content-free message explains why and no file is written. No AI,
 no network, no storage writes; the sensitive profile is never read.
 

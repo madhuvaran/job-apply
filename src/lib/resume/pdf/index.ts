@@ -14,6 +14,7 @@ export {
 export { downloadBlob, type DownloadEnvironment, type DownloadResult } from './download';
 export {
   downloadResumeSnapshot,
+  downloadTailoredResumePdf,
   generateAndDownloadResume,
   type ResumeExportDeps,
   type ResumeExportFailure,

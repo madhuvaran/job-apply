@@ -5,7 +5,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { jobPostingSchema } from '../../job-posting';
 import { profileSchema, type Profile } from '../../profile';
-import { generateAndDownloadResume } from './export';
+import { downloadTailoredResumePdf, generateAndDownloadResume } from './export';
+import { baseResume } from './test-support';
 
 const job = jobPostingSchema.parse({
   id: 'job-1',
@@ -105,5 +106,56 @@ describe('generateAndDownloadResume', () => {
       Object.assign(globalThis, { fetch: original });
     }
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Prompt 20 follow-up: the snapshot-based PDF export the current-resume flow
+ * uses so one PDF action never tailors twice.
+ */
+describe('downloadTailoredResumePdf', () => {
+  it('renders and downloads the provided snapshot (no tailoring, no re-read)', async () => {
+    const download = vi.fn((_blob: Blob, _filename: string) => ({ ok: true as const }));
+    const snapshot = baseResume();
+    const outcome = await downloadTailoredResumePdf(snapshot, { download });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.pageCount).toBeGreaterThanOrEqual(1);
+    expect(outcome.filename).toMatch(/\.pdf$/);
+    expect(download).toHaveBeenCalledTimes(1);
+    const [blob, filename] = download.mock.calls[0]!;
+    expect(blob).toBeInstanceOf(Blob);
+    expect(filename).toBe(outcome.filename);
+  });
+
+  it('smoke-checks the snapshot payload without mutating it', async () => {
+    const snapshot = baseResume();
+    const before = JSON.stringify(snapshot);
+    const outcome = await downloadTailoredResumePdf(snapshot, { download: () => ({ ok: true }) });
+    expect(outcome.ok).toBe(true);
+    expect(JSON.stringify(snapshot)).toBe(before);
+  });
+
+  it('does not download when the client download step fails', async () => {
+    const download = vi.fn(() => ({ ok: false as const, reason: 'unavailable' as const, message: 'blocked' }));
+    const outcome = await downloadTailoredResumePdf(baseResume(), { download });
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.reason).toBe('download-unavailable');
+    expect(outcome.message).toBe('blocked');
+  });
+
+  it('surfaces characters the PDF font cannot encode as a safe typed failure', async () => {
+    const download = vi.fn(() => ({ ok: true as const }));
+    const outcome = await downloadTailoredResumePdf(
+      baseResume({ header: { displayName: '\u65E5\u672C\u8A9E' } }),
+      { download },
+    );
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.reason).toBe('unsupported-characters');
+    expect(outcome.message).toContain('U+65E5');
+    expect(outcome.message).not.toContain('\u65E5');
+    expect(download).not.toHaveBeenCalled();
   });
 });
