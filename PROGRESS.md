@@ -1,5 +1,137 @@
 # PROGRESS
 
+## Done (2026-10-14, task 26 / Prompt 21: real-browser verification of the PDF and DOCX exports)
+Verification-only task — **no product feature, no dependency, no Prompt 22 work,
+no source change (repo diff = this file only).** Executed an automated
+**real-Chromium** verification of the current and historical export workflows,
+specializing in DOCX downloads.
+
+### Method (reused the Prompt 19 approach)
+- Throwaway harness **outside the repository**
+  (`%LOCALAPPDATA%\Temp\p19-verify\verify21.mjs`, `playwright-core` installed in
+  that temp dir only — nothing committed, no repository dependency added).
+  It drives Playwright's **bundled Chromium** (`chromium-1234`…\chrome.exe) via
+  `launchPersistentContext` with `--load-extension` / `--disable-extensions-except`
+  on the freshly built `.output/chrome-mv3`, **headless**, `acceptDownloads: true`.
+  System Chrome cannot side-load (Chrome ≥137 removed `--load-extension`).
+  Extension loaded; MV3 service worker
+  `chrome-extension://dfikbkpbilhklcdajlceobmpgcalkpgb`.
+- **Fake data only**: profile, two job postings and a fake sensitive profile were
+  seeded straight into `chrome.storage.local` with distinctive markers
+  (`ORIGSUMMARYTOKENAAA`, `ORIGBULLETTOKENCCC`, edited variants
+  `EDITSUMMARYTOKENBBB` / `EDITBULLETTOKENDDD`). The user's real profile was
+  never read, written or displayed.
+- Downloads were captured through the **browser's own download events** and
+  written to a temp directory **outside the repo**
+  (`%LOCALAPPDATA%\Temp\p21-verify\out[C]\`), then inspected offline:
+  PDF text via the same inflate + `Tj` technique as
+  `src/lib/resume/pdf/test-support.ts`; the DOCX was unzipped with a small
+  local ZIP reader and `word/document.xml` parsed with the **browser's
+  `DOMParser`** (safe parse — asserts no `parsererror`, no `<!DOCTYPE>` /
+  `<!ENTITY>`).
+
+### Results — 3 runs
+| Run | Build | Checks | Exit |
+|---|---|---|---|
+| A | clean (`e12a573` artifact) | **32 passed, 0 failed**, 5 skipped (counter checks) | **0** |
+| B | temporarily instrumented | **37 passed, 0 failed, 0 skipped** | **0** |
+| C | clean again after reverting the hook | **32 passed, 0 failed**, 5 skipped | **0** |
+
+**Current resume (Options → Jobs)**
+- The section offers **PDF, DOCX and save** actions once a job is selected
+  (`beforeSelect={pdf:0,docx:0,save:0}` → `afterSelect pdf=1 docx=1 save=1`).
+- PDF download: 3,005 bytes, header `%PDF-`, notice
+  `Resume PDF generated (1 page). Check your downloads.`
+- DOCX download: 9,267 bytes, `PK\x03\x04`, package parts
+  `[Content_Types].xml`, `_rels/.rels`, `word/document.xml` (+ `styles.xml`,
+  `numbering.xml`, `word/_rels/document.xml.rels`) — **valid ZIP/OOXML**.
+- XML parsed cleanly (no DTD/entities); the fake resume text, all six section
+  headings and their **canonical order** are present in BOTH formats:
+  Professional Summary → Skills → Professional Experience → Education →
+  Certifications → Languages. Both formats expose the **same 7/7 content
+  tokens** (same prepared snapshot). DOCX has **0 tables, 0 drawings, 0
+  hyperlinks** (single-column ATS markup).
+- Filenames safe: `resume-senior-backend-engineer-tailored.pdf` /
+  `.docx` (no spaces or path characters).
+- **Failures**: a PDF export with an unencodable display name fails with
+  `Some profile text cannot be rendered in the PDF: … U+65E5, U+672C, U+8A9E.`
+  and a DOCX export with an XML-invalid character fails with
+  `Some resume text contains characters that cannot be stored in a Word
+  document: U+000B. No file was created.` — in both cases **no download
+  happened, no success notice appeared, and the error carried only `U+XXXX`
+  codes** (no resume/profile text).
+
+**Historical snapshots**
+- Save wrote **only** `job-resume-history.v1` (`changedKeys=["job-resume-history.v1"]`,
+  `job-applications.v1` still absent).
+- The saved version exported PDF + DOCX containing the original markers.
+- After editing the master profile's **summary, a skill and an experience
+  bullet**, both historical exports still rendered the **original** snapshot and
+  **not** a single edited token; the stored record stayed byte-identical and
+  no stored key changed (`storageUnchanged=true`).
+- With the job posting removed, the version stayed listed with
+  `data-orphaned="true"` ("…no longer saved") and still exported both formats.
+- Delete still requires the two-step confirmation (`confirmShown=1`, storage
+  unchanged while confirming), **Cancel wrote nothing**, and the confirmed
+  delete removed exactly that version.
+
+**Single-snapshot workflow (temporary instrumentation, never shipped)**
+A one-line call counter was added to `prepareTailoredResume`, built, measured,
+then **reverted** (working tree clean; the final `.output` contains **0 files**
+mentioning the probe; nothing committed):
+- a single PDF action: `null → 1` (**tailors exactly once**);
+- DOCX on the same inputs: `1 → 1` (no re-tailor);
+- save on the same inputs: `1 → 1` (reuses the snapshot);
+- historical PDF + DOCX after a reload: `null → null` (no tailoring at all);
+- a changed profile + new PDF: `null → 1` (the counter is live, not stuck).
+
+**Privacy / storage / permissions**
+- **No `http(s)` request** during the whole run (4 requests total, all
+  `chrome-extension://`); no AI/network call.
+- Built manifest still `permissions=[activeTab,scripting,storage]`,
+  `host_permissions=null`.
+- `job-applications.v1` was **never created or modified**.
+- Seeded sensitive tokens (`fake.person@secret.invalid`, `+493000000001`,
+  `SECRETADDRESS1 Fakestrasse 1`) are absent from the AI-safe profile record,
+  from the PDF and from the DOCX. Schema inspection confirms why:
+  contact/legal/voluntary/documents live only in the separate
+  `src/lib/sensitive.ts` record (`job-profile.sensitive.v2`),
+  `tailoredResumeSchema` has no contact field, and the history entry schema is
+  `.strict()`, so an out-of-contract key is rejected (also unit-tested in
+  `pdf/render.test.ts`, `docx/render.test.ts`, `history.test.ts`).
+
+### Harness defects found (mine, not the product's)
+The first run reported 5 failures; all three causes were in the throwaway
+harness and were fixed and re-run: `await Promise.all([...])[0]` bound `[0]` to
+the Promise (read the error before the click finished), the action buttons were
+counted before a job was selected (the section only renders then), and the
+rendered language label is `English (Fluent)`, not `English (fluent)`. **No
+product defect was found in any run.**
+
+### Commands run this task (exit statuses captured inline)
+- `npm run build` → **exit 0** (clean, and again after removing the probe)
+- real-browser harness (clean build) → **exit 0, 32/32 checks passed**
+- real-browser harness (instrumented build) → **exit 0, 37/37 checks passed**
+- `npx vitest run` → **exit 0, 683/683 passed (43 files)**
+- `npm run compile` → **exit 0**
+
+### Limitations / still unverified
+- **Chromium only, headless** — not Chrome-stable (cannot CLI-side-load
+  extensions at ≥137), not a human-driven session, and **no word processor was
+  opened**: nothing is claimed about how Word, Google Docs or LibreOffice
+  render/round-trip these files, and **no ATS compatibility is claimed**.
+- Tailor-call counts came from a temporary, now-reverted instrumentation hook;
+  without it the browser cannot observe internal call counts (the 5 checks are
+  reported as SKIP on clean builds).
+- Downloads were captured by the harness and written to a temp path; the OS
+  “Save as” flow and the browser's download UI were not exercised.
+- Network coverage is Playwright's context-level request event (extension
+  service-worker requests may not surface there); unit tests independently
+  assert `fetch` is never called.
+- No accessibility/keyboard pass, no multi-tab or sync-storage test.
+
+---
+
 ## Done (2026-10-14, task 25 / Prompt 20 follow-up: one tailored snapshot per export)
 Fixes a real double-tailoring bug in the current-resume workflow. No Prompt 21
 work, no new features, no new dependencies, no new permissions, no unrelated
