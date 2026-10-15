@@ -1,5 +1,126 @@
 # PROGRESS
 
+## Done (2026-10-15, task 33 / Prompt 27: Adzuna job-search feasibility + integration foundation)
+Provider-agnostic job-discovery foundation plus a feasibility-verified Adzuna layer.
+**No live search, no UI, no saved search/alert/polling, no backend, no deployment,
+no new dependency, no permission or manifest change, and no credential anywhere in
+the extension.** Facts were verified first-hand from Adzuna's official docs and
+OpenAPI spec (2026-10-14, re-checked 2026-10-15) and written up with sources and
+explicit uncertainties in **`docs/adzuna-integration.md`**.
+
+### Verified API facts (source list in the doc; S2 = official OpenAPI spec)
+- **Endpoint** `GET https://api.adzuna.com/v1/api/jobs/{country}/search/{page}`
+  (S2 `servers` = `https://api.adzuna.com/v1/api`); `country`/`page` are path
+  params, everything else query params.
+- **Auth** `app_id` + `app_key`, documented as REQUIRED **query** parameters.
+- **Countries** the exact 19-code enum, **India (`in`) included**; `sort_by` ∈
+  {`default`,`hybrid`,`date`,`salary`,`relevance`}; `what`, `where`, `distance`
+  (doc default 5 km), `max_days_old`; `results_per_page` spec-minimum 1 with **no
+  documented maximum** and **no documented default**.
+- **Status codes** documented for search: 200/400/404/**410 = "Authorisation
+  failed"**/500. **429 is NOT documented** (mapped defensively).
+- **Job fields** required `id`, `title`, `description`, `created`; optional
+  `redirect_url`, `company`, `location`, `salary_min/max`, `salary_is_predicted`,
+  `contract_time/type`, `category`, `adref`, `latitude`, `longitude`.
+  `created` is ISO 8601; `description` truncated to **500 chars**;
+  `redirect_url` is required to comply with Adzuna's terms.
+- **Access limits** (Terms of Service): **25/min, 250/day, 1000/week, 2500/month**.
+- **Attribution** (ToS): label each advert **"Adzuna", >=116x23 px, hyperlinked**.
+- **Uncertain / account-level** (documented as such, not assumed): whether access
+  is free; the overage status code; caching policy (none stated — so **no cache**
+  is implemented); India result quality; plan restrictions.
+
+### Architecture chosen (matching the existing AI backend-proxy pattern)
+`src/lib/job-search/` (provider-agnostic) + `src/lib/job-search/adzuna/`:
+- **`schemas.ts`** — bounded `NormalizedJobResult` + `NormalizedSearchResults`
+  (with `skipped`/`skippedReasons` and mandatory `attribution`). Reuses
+  `postingUrlSchema`/`postingDateSchema`/`MAX_TITLE_CHARS` from the job-posting
+  model, so a result is directly compatible with the posting, duplicate and match
+  systems. Optional means **absent**, never invented; raw provider keys (`__CLASS__`,
+  `adref`, coordinates) never survive.
+- **`errors.ts` / `provider.ts`** — typed, non-throwing error model (invalid
+  request, provider-rejected, unauthenticated, rate-limited, network, server,
+  http, invalid-response, not-configured, timeout, provider-fault) and a transport
+  contract. No credential/body/header text in any error.
+- **`service.ts`** — `runJobSearch()`: config validation → **honesty gate**
+  (disabled/unconfigured ⇒ `not-configured`, **zero network requests**) → request
+  validation → **one** attempt with timeout → normalization. A failure is never
+  turned into an empty result page.
+- **`adzuna/schemas.ts`** — strict `.strict()` request over the documented params;
+  verified country enum + `ADZUNA_INDIA_SUPPORTED`; `buildAdzunaSearchQuery()` can
+  never emit `app_id`/`app_key`; `ADZUNA_ATTRIBUTION` carries the 116x23 credit.
+- **`adzuna/normalize.ts`** — pure raw→normalized mapping; a record without a
+  usable http(s) `redirect_url` is skipped (not shown link-less); unusable records
+  are counted with **fixed reasons**; a malformed envelope is an **error**, while
+  `results: []` is a real empty result.
+- **`adzuna/provider.ts`** — the ONLY transport: sends to the project's own
+  **https** proxy URL (built from the validated request) and never calls
+  `api.adzuna.com`; options schema is `.strict()` with **no credential field**,
+  so `appId`/`appKey` fail validation by construction.
+- **`adzuna/adapter.ts` + `index.ts`** — wires the pure Adzuna layer into
+  `runJobSearch()` without coupling the orchestrator to Adzuna.
+
+### Integration boundary (no backend available)
+Adzuna authenticates with a query-parameter key, which a browser extension cannot
+hold safely, so the extension ships **unconfigured** and talks only to a future
+project-owned `https` proxy. It never appears to have working live search:
+`describeJobSearchAvailability()` reports `disabled` / `not-configured` and the
+provider is never invoked. No placeholder key exists that could be mistaken for a
+working one. No request is made on startup and no background polling was added.
+
+### Tests (+102 → 1042 total; 5 new files, mocked transport, no live call)
+- **`adzuna/schemas.test.ts` (23)** — country enum verbatim, India, `sort_by`,
+  attribution size, defaults, every country accepted, keyword/location/pagination/
+  radius/age bounds, credential/endpoint/profile-field rejection, query never
+  contains `app_id`/`app_key`, documented India path.
+- **`adzuna/normalize.test.ts` (19)** — full mapping + injected clock/attribution,
+  raw keys absent, deterministic, empty results = real empty, missing `count`
+  omitted, minimal record, malformed optionals dropped, `area` fallback, no
+  capture-time date substitute, 500-char snippet cap, `predicted` true/false/null,
+  single-sided + swapped salary, malformed envelope rejected, fixed skip reasons,
+  page cap counted.
+- **`adzuna/provider.test.ts` (27)** — options reject credentials/http and never
+  echo values; proxy URL has the documented request and no credential; GET with no
+  auth header; 410/401/403→unauthenticated, 400/404→provider-rejected, 5xx→server,
+  other→http, 429→rate-limited (+`Retry-After`), network/abort→network/timeout,
+  non-JSON→malformed, body never leaked, sends only to our proxy.
+- **`service.test.ts` (26)** — config has no credential field and requires https;
+  availability states; **disabled/unconfigured ⇒ zero provider calls and never an
+  empty page**; invalid request rejected pre-call; happy path normalization; every
+  failure mapping; provider throw → provider-fault; never-settling/aborting
+  provider → timeout; provider-agnostic fake adapter; **no timer scheduled when
+  unavailable** (no polling).
+- **`credentials.test.ts` (7)** — source scan: no credential-shaped literal, no
+  direct `api.adzuna.com` call, transport reaches the vendor only through the
+  proxy URL builder, credential names live in exactly one constant, and the doc
+  contains no long hex/base64 token.
+
+### Commands run this task (exit statuses captured inline)
+- `npx vitest run` → **exit 0, 1042/1042 passed** (58 files; 940 before + 102 new)
+- `npm run compile` (tsc --noEmit) → **exit 0** (two test-only type errors were found
+  and fixed before committing)
+- `npm run build` (wxt build, chrome-mv3) → **exit 0** (manifest unchanged:
+  `storage`, `activeTab`, `scripting`; no host permissions)
+- Bundle scan of `.output/chrome-mv3` → no `app_id`/`app_key`/`api_key` secret and
+  no `api.adzuna.com` call target anywhere in the shipped JS.
+
+### Limitations / known issues
+- **No live search exists** and none can until a secure `https` proxy holding the
+  credentials is deployed and configured. The provider ships unconfigured.
+- The overage status (429 vs another code) is **unverified**; the mapping is
+  defensive. The transport trusts the proxy to forward upstream status codes.
+- Result currency is unknown (amounts are local-currency and unlabelled).
+- Caching is **not** implemented because the reviewed terms state no caching policy.
+- Whether API access is free, India result quality and plan restrictions remain
+  account-level questions to confirm with a configured developer account.
+
+### Next
+- Prompt 28 (not started — this task stops here): deploy the server-side search
+  proxy that holds `app_id`/`app_key`, attach it in settings, confirm the real
+  overage status and India result quality against a configured account, then build
+  the search UI on the normalized page this foundation already produces.
+
+---
 ## Done (2026-10-14, task 32 / Prompt 26.1: recheck duplicates immediately before save)
 Focused fix for the race found in the Prompt 26 review: the duplicate gate could
 rely on a copy of the saved list read earlier (Options → Jobs used its in-memory

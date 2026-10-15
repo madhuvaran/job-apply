@@ -538,6 +538,51 @@ treated as "nothing saved"); the pre-write check is not atomic (Chrome storage
 has no compare-and-write); and the warning UIs are exercised with jsdom +
 `react-dom` rather than a real extension session in a browser.
 
+## Job search foundation (Adzuna) — **no live search in this build**
+
+`src/lib/job-search/` is a feasibility-verified **foundation only**: there is
+**no job-search UI, no saved search, no alert and no automatic polling**, and
+this build performs **zero Adzuna requests**. Live job search is **not
+available** until you deploy and configure a secure endpoint (see below), and
+the extension reports that plainly instead of showing an empty or fake result
+list. Full API facts, sources and uncertainties: [`docs/adzuna-integration.md`](docs/adzuna-integration.md).
+
+Why it cannot ship live as-is: Adzuna authenticates with an **`app_id`/`app_key`
+query parameter**, so any key inside the extension would be a public secret and
+would spend its owner's quota on every install. The boundary is therefore the
+same backend-proxy pattern the AI layer uses:
+
+```
+extension (runJobSearch) ──GET, no key──> your https search proxy ──> api.adzuna.com
+   strict zod in and out    holds app_id/app_key server-side
+```
+
+- The extension talks only to a project-owned **`https://`** endpoint; both the
+  config schema and the provider options schema are `.strict()` with **no
+  credential field**, so an `appId`/`appKey`/`apiKey` cannot even be stored.
+- The request/response schemas are strictly validated, bounded, and
+  credential-free; only search terms and a location are ever sent — never your
+  profile, resume, contact, legal/EEO or compensation data.
+- Missing provider fields stay **absent** (never invented), unusable records are
+  counted with fixed reasons rather than dropped silently, an unreadable
+  response is an **error** (never an empty page), and each result page carries
+  Adzuna's required **116×23 pixel, hyperlinked attribution**.
+- **No new permission and no background polling**: with search off or
+  unconfigured, `runJobSearch()` returns an explicit `not-configured` state
+  without touching the network (asserted by unit tests).
+
+Implemented now: strict request validation with the documented country enum
+(**India `in` included**), response normalization to a `NormalizedJobResult`
+compatible with the existing job-posting, duplicate-detection and match systems,
+a typed provider contract, and the Adzuna transport + orchestrator with typed
+errors (invalid request, unauthenticated, rate-limited, network, server,
+invalid response, not-configured, timeout, provider fault).
+
+**Deferred to later prompts:** the search UI, saved searches, alerts, polling,
+retries/backoff, caching and any live request. To go live you need a server-side
+proxy that holds the key and returns Adzuna-shaped JSON — no backend,
+deployment or paid service was created here.
+
 ## Autofill (deterministic foundation, no AI)
 
 `src/lib/autofill/` is the first, conservative autofill foundation. It fills
@@ -728,6 +773,10 @@ notification, no combined score and nothing written back to storage), that
 schema's hardening (Prompt 25), and **duplicate-job detection** on both save
 paths (Prompt 26 — conservative canonical-URL / source-identifier / normalized
 company+title rules, ambiguous matches never auto-picked, nothing merged or
-overwritten).
-**Not yet built: a Workday adapter, live wiring of the AI provider endpoint, and
+overwritten), and the **Adzuna job-search foundation** (Prompt 27 — strict
+request/response schemas, normalization, a typed provider contract and a
+secure-proxy transport; **shipped unconfigured, with no live search, no backend
+and no credential in the extension**).
+**Not yet built: any live job search or search UI (both need a deployed secure
+search proxy), a Workday adapter, live wiring of the AI provider endpoint, and
 the deeper application-form automation.**
