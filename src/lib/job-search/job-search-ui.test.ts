@@ -435,20 +435,35 @@ describe('the new surface does not duplicate or trigger existing systems', () =>
   );
   const logicSource = readFileSync(join(process.cwd(), 'src', 'lib', 'job-search', 'ui.ts'), 'utf8');
 
-  it('never writes storage, tracks an application or scores a match', () => {
-    for (const forbidden of [
-      'upsertJobPosting',
-      'guardJobSave',
-      'createJobPosting',
-      'calculateJobMatch',
-      'startTrackingApplication',
-      'loadJobPostings',
-      'browser.storage',
-      'wxt/browser',
-    ]) {
+  /**
+   * CHANGED BY PROMPT 29 (intentionally, and verified here): the panel may now
+   * WRITE — but only through `guardJobSave()` (re-reading persisted postings at
+   * the final boundary) and the validating `upsertJobPosting()` service. What it
+   * still must never do is score a match, touch the application log, read storage
+   * itself, or bypass the service layer.
+   */
+  it('scores no match and creates no application entry', () => {
+    for (const forbidden of ['calculateJobMatch', 'startTrackingApplication']) {
       expect(panelSource, `panel must not reference ${forbidden}`).not.toContain(forbidden);
       expect(logicSource, `logic must not reference ${forbidden}`).not.toContain(forbidden);
     }
+  });
+
+  it('never bypasses the guarded storage service', () => {
+    // Raw storage / browser APIs stay off-limits — both must go through services.
+    for (const source of [panelSource, logicSource]) {
+      expect(source).not.toContain('browser.storage');
+      expect(source).not.toContain("from 'wxt/browser'");
+    }
+    // The search LOGIC itself stays pure; only the panel may persist.
+    expect(logicSource).not.toContain('upsertJobPosting');
+    expect(logicSource).not.toContain('guardJobSave');
+    expect(logicSource).not.toContain('loadJobPostings');
+    // The panel must do no storage reads of its own (no stale state for the
+    // duplicate check) and must write only via the guarded path.
+    expect(panelSource).not.toContain('loadJobPostings');
+    expect(panelSource).toContain('guardJobSave(');
+    expect(panelSource).toContain('upsertJobPosting(');
   });
 
   it('makes no direct network call of its own', () => {

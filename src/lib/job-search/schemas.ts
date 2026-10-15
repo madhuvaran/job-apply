@@ -26,7 +26,7 @@
  */
 import { z } from 'zod';
 import { postingDateSchema } from '../job-dates';
-import { MAX_TEXT_FIELD_CHARS, MAX_TITLE_CHARS, postingUrlSchema } from '../job-posting';
+import { MAX_EXTERNAL_ID_CHARS, MAX_TEXT_FIELD_CHARS, MAX_TITLE_CHARS, postingUrlSchema } from '../job-posting';
 
 export const JOB_SEARCH_SCHEMA_VERSION = '1';
 
@@ -53,8 +53,6 @@ export const MAX_SEARCH_PAGES = 100;
 export const MAX_KEYWORDS_CHARS = 200;
 /** Longest accepted location string. */
 export const MAX_LOCATION_CHARS = 120;
-/** Longest accepted provider-side job identifier. */
-export const MAX_EXTERNAL_ID_CHARS = 100;
 /**
  * Longest accepted description snippet. Adzuna documents that the search
  * response carries a description "truncated to 500 characters" and the search

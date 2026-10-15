@@ -35,11 +35,15 @@
  */
 import { z } from 'zod';
 import { extractIsoCalendarDate } from '../../job-dates';
-import { MAX_TEXT_FIELD_CHARS, MAX_TITLE_CHARS, postingUrlSchema } from '../../job-posting';
+import {
+  MAX_EXTERNAL_ID_CHARS,
+  MAX_TEXT_FIELD_CHARS,
+  MAX_TITLE_CHARS,
+  postingUrlSchema,
+} from '../../job-posting';
 import {
   JOB_SEARCH_SCHEMA_VERSION,
   MAX_DESCRIPTION_SNIPPET_CHARS,
-  MAX_EXTERNAL_ID_CHARS,
   MAX_SALARY_AMOUNT,
   MAX_SEARCH_RESULTS,
   MAX_SKIP_REASON_CHARS,

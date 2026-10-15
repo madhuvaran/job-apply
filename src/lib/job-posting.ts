@@ -50,6 +50,34 @@ export const MAX_LIST_ITEM_CHARS = 1000;
 /** Cap for one stored posting list collection. */
 export const MAX_POSTINGS = 500;
 
+/* --- import provenance (Prompt 29) ---------------------------------- */
+
+/**
+ * Longest accepted SOURCE-PUBLISHED job identifier (e.g. a provider's job id).
+ * Owned here so the job-search layer can share it without a circular import.
+ */
+export const MAX_EXTERNAL_ID_CHARS = 100;
+/** Longest accepted provider name (e.g. `adzuna`). */
+export const MAX_PROVIDER_CHARS = 60;
+
+/**
+ * Whether `rawDescription` holds the COMPLETE text or only an excerpt.
+ * Every record saved before this field existed describes itself as `full`,
+ * which is correct: they were all created from pasted or captured page text.
+ */
+export const JOB_DESCRIPTION_KINDS = ['full', 'snippet'] as const;
+export type JobDescriptionKind = (typeof JOB_DESCRIPTION_KINDS)[number];
+
+/**
+ * How a record arrived. `manual` = typed into the options page (including the
+ * Job Search import form), `page-capture` = popup capture, `provider-search` =
+ * mapped from a normalized provider search result.
+ * Widening this enum is BACKWARD COMPATIBLE: every stored record already
+ * carries `manual` or `page-capture`, and no unknown value is ever produced.
+ */
+export const JOB_SOURCES = ['manual', 'page-capture', 'provider-search'] as const;
+export type JobSource = (typeof JOB_SOURCES)[number];
+
 /* ------------------------------------------------------------------ */
 /* Primitives                                                          */
 /* ------------------------------------------------------------------ */
@@ -108,9 +136,23 @@ export const jobPostingSchema = z
      */
     postedDate: postingDateSchema.optional(),
 
-    /* --- provenance --- */
-    /** 'manual' = typed into the options page; 'page-capture' = popup capture. */
-    source: z.enum(['manual', 'page-capture']).default('manual'),
+    /* --- provenance (Prompt 29) -------------------------------------- */
+    /** Which provider supplied this record (e.g. `adzuna`), when one did. */
+    provider: z.string().trim().min(1).max(MAX_PROVIDER_CHARS).optional(),
+    /**
+     * Identifier the SOURCE itself published (never derived or guessed).
+     * Absent for manual entries and page capture — nothing visible supplies one.
+     */
+    externalId: z.string().trim().min(1).max(MAX_EXTERNAL_ID_CHARS).optional(),
+    /**
+     * Whether `rawDescription` is the complete description or only an
+     * excerpt/provider snippet (Prompt 29). A short provider snippet must never
+     * present itself as a full posting. Defaulted so pre-existing records keep
+     * their meaning; the default never rewrites the text itself.
+     */
+    descriptionKind: z.enum(JOB_DESCRIPTION_KINDS).default('full'),
+    /** 'manual' = typed in; 'page-capture' = popup; 'provider-search' = provider. */
+    source: z.enum(JOB_SOURCES).default('manual'),
     /** When the posting was captured/saved (ISO 8601). */
     capturedAt: z.iso.datetime(),
     updatedAt: z.iso.datetime().optional(),

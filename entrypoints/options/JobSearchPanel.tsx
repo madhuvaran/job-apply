@@ -20,9 +20,12 @@
  *   provider supplied them; missing company/location are stated as missing rather
  *   than filled with a default, salary is shown WITHOUT inventing a currency, and
  *   the required Adzuna attribution travels with the results.
- * - NO AUTO-SAVE / NO AUTO-APPLY: nothing here writes to storage, tracks an
- *   application or submits a form. Saving a discovered job is a separate,
- *   user-controlled action (see the note in the panel and README).
+ * - NO AUTO-SAVE OF SEARCH RESULTS: nothing on the results side writes to
+ *   storage, scores a match or submits an application. A SEPARATE, explicit
+ *   "Add a job from a listing" flow below lets the user paste a job, review it,
+ *   and save it through the Prompt 26.1 duplicate guard + the validating storage
+ *   service (Prompt 29).
+ * - NO AUTO-APPLY: saving a job never creates an application-log entry.
  *
  * Kept intentionally presentational: all logic lives in `src/lib/job-search/ui.ts`
  * so it can be unit-tested without React.
@@ -32,14 +35,24 @@ import {
   buildJobSearchRequest,
   createUnconfiguredSearchProvider,
   describeJobSearchAvailability,
+  EMPTY_JOB_IMPORT_FORM,
   EMPTY_JOB_SEARCH_FORM,
   EXTENSION_JOB_SEARCH_CONFIG,
   executeJobSearch,
+  identityForDuplicateCheck,
   initialJobSearchState,
   JOB_SEARCH_COUNTRY_OPTIONS,
   JOB_SEARCH_SORT_OPTIONS,
+  resetJobImportForm,
   resetJobSearchForm,
+  toJobPosting,
+  validateJobImportForm,
   validateJobSearchForm,
+  buildImportCandidate,
+  type JobImportCandidate,
+  type JobImportField,
+  type JobImportForm,
+  type JobImportIssue,
   type JobSearchForm,
   type JobSearchIssue,
   type JobSearchViewState,
@@ -47,6 +60,9 @@ import {
   type NormalizedSearchResults,
   type SalaryRange,
 } from '../../src/lib/job-search';
+import { guardJobSave, type DuplicateCheckResult } from '../../src/lib/job-duplicates';
+import { MAX_RAW_DESCRIPTION_CHARS, type JobPosting } from '../../src/lib/job-posting';
+import { upsertJobPosting } from '../../src/lib/storage';
 import { formatPostingDate } from '../../src/lib/job-dates';
 import { Section } from './ui';
 
@@ -331,6 +347,103 @@ export default function JobSearchPanel() {
 
   const distanceDisabled = form.where.trim() === '';
 
+  /* ---------------- manual import (Prompt 29) ---------------- */
+  /**
+   * The import flow's lifecycle. Only `form` → `review` → `saved`:
+   * nothing is written before the user has seen the review step, and the
+   * duplicate guard runs BOTH on entering review and again immediately before
+   * the write (never against this component's state).
+   */
+  type ImportPhase =
+    | { kind: 'form' }
+    | { kind: 'review'; candidate: JobImportCandidate; dupCheck: DuplicateCheckResult | null; dupNotice: string | null }
+    | { kind: 'saved'; job: JobPosting };
+
+  const [importForm, setImportForm] = useState<JobImportForm>(EMPTY_JOB_IMPORT_FORM);
+  const [importPhase, setImportPhase] = useState<ImportPhase>({ kind: 'form' });
+  const [importIssues, setImportIssues] = useState<JobImportIssue[]>([]);
+  const [importError, setImportError] = useState<string | null>(null);
+
+  const importIssueByField = useMemo(() => {
+    const map = new Map<JobImportField, string>();
+    for (const issue of importIssues) if (!map.has(issue.field)) map.set(issue.field, issue.message);
+    return map;
+  }, [importIssues]);
+
+  const setImportField = useCallback(<K extends keyof JobImportForm>(key: K, value: string) => {
+    setImportForm((current) => ({ ...current, [key]: value }));
+  }, []);
+
+  /** Validate + duplicate-check, then show the review step. Writes nothing. */
+  const onReviewImport = useCallback(async () => {
+    setImportError(null);
+    const built = buildImportCandidate(importForm);
+    if (!built.ok) {
+      setImportIssues(built.issues);
+      return;
+    }
+    setImportIssues([]);
+    const decision = await guardJobSave({
+      candidate: identityForDuplicateCheck(built.candidate),
+    });
+    if (decision.kind === 'blocked-duplicate') {
+      setImportPhase({ kind: 'review', candidate: built.candidate, dupCheck: decision.result, dupNotice: null });
+      return;
+    }
+    if (decision.kind === 'blocked-check-failed') {
+      setImportPhase({ kind: 'review', candidate: built.candidate, dupCheck: null, dupNotice: decision.message });
+      return;
+    }
+    setImportPhase({ kind: 'review', candidate: built.candidate, dupCheck: null, dupNotice: null });
+  }, [importForm]);
+
+  /**
+   * Write the reviewed candidate. `override` is the user's explicit
+   * "save as a separate record" choice: it skips ONLY this duplicate gate for
+   * one attempt and never bypasses storage validation.
+   */
+  const writeImport = useCallback(
+    async (override: boolean) => {
+      if (importPhase.kind !== 'review') return;
+      setImportError(null);
+      if (!override) {
+        // FINAL boundary check — re-reads persisted postings, never this state.
+        const decision = await guardJobSave({
+          candidate: identityForDuplicateCheck(importPhase.candidate),
+        });
+        if (decision.kind === 'blocked-duplicate') {
+          setImportPhase({ kind: 'review', candidate: importPhase.candidate, dupCheck: decision.result, dupNotice: null });
+          return;
+        }
+        if (decision.kind === 'blocked-check-failed') {
+          setImportPhase({ kind: 'review', candidate: importPhase.candidate, dupCheck: null, dupNotice: decision.message });
+          return;
+        }
+      }
+      const posting = toJobPosting(importPhase.candidate);
+      const res = await upsertJobPosting(posting);
+      if (res === null) {
+        setImportPhase({ kind: 'saved', job: posting });
+      } else if (!res.ok) {
+        setImportError(`Save failed (${res.reason}). ${res.message}`);
+      }
+    },
+    [importPhase],
+  );
+
+  const onCancelImport = useCallback(() => {
+    setImportIssues([]);
+    setImportError(null);
+    setImportPhase({ kind: 'form' });
+  }, []);
+
+  const onImportAnother = useCallback(() => {
+    setImportForm(resetJobImportForm());
+    setImportIssues([]);
+    setImportError(null);
+    setImportPhase({ kind: 'form' });
+  }, []);
+
   return (
     <div className="job-search-panel">
       <Section title="Search jobs">
@@ -467,17 +580,255 @@ export default function JobSearchPanel() {
         <JobSearchResults state={state} />
       </Section>
 
+      <Section title="Add a job from a listing">
+        {importPhase.kind === 'form' && (
+          <form
+            aria-label="Add a job from a listing"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void onReviewImport();
+            }}
+          >
+            <p className="hint">
+              Paste what you can see on a listing page. Nothing is fetched or scraped — you are
+              reading the page yourself — and nothing is written until you have reviewed it and
+              pressed Save.
+            </p>
+            <Field
+              id="import-title"
+              label="Job title *"
+              error={importIssueByField.get('title')}
+            >
+              <input
+                id="import-title"
+                value={importForm.title}
+                onChange={(e) => setImportField('title', e.target.value)}
+                aria-invalid={importIssueByField.has('title')}
+              />
+            </Field>
+            <Field
+              id="import-company"
+              label="Company"
+              hint="Leave blank if the listing does not state one."
+              error={importIssueByField.get('company')}
+            >
+              <input
+                id="import-company"
+                value={importForm.company}
+                onChange={(e) => setImportField('company', e.target.value)}
+                aria-invalid={importIssueByField.has('company')}
+              />
+            </Field>
+            <Field
+              id="import-location"
+              label="Location"
+              hint="Leave blank if the listing does not state one."
+              error={importIssueByField.get('location')}
+            >
+              <input
+                id="import-location"
+                value={importForm.location}
+                onChange={(e) => setImportField('location', e.target.value)}
+                aria-invalid={importIssueByField.has('location')}
+              />
+            </Field>
+            <Field
+              id="import-url"
+              label="Original listing URL"
+              hint="http:// or https:// only. The link is stored, never opened or fetched."
+              error={importIssueByField.get('originalUrl')}
+            >
+              <input
+                id="import-url"
+                value={importForm.url}
+                onChange={(e) => setImportField('url', e.target.value)}
+                aria-invalid={importIssueByField.has('originalUrl')}
+              />
+            </Field>
+            <Field
+              id="import-description"
+              label="Description or excerpt *"
+              error={importIssueByField.get('rawDescription')}
+            >
+              <textarea
+                id="import-description"
+                rows={6}
+                maxLength={MAX_RAW_DESCRIPTION_CHARS}
+                value={importForm.description}
+                onChange={(e) => setImportField('description', e.target.value)}
+                aria-invalid={importIssueByField.has('rawDescription')}
+              />
+            </Field>
+            <Field
+              id="import-kind"
+              label="The text above is *"
+              hint="So a short excerpt is never stored as a complete description."
+              error={importIssueByField.get('descriptionKind')}
+            >
+              <select
+                id="import-kind"
+                value={importForm.descriptionKind}
+                onChange={(e) => setImportField('descriptionKind', e.target.value)}
+                aria-invalid={importIssueByField.has('descriptionKind')}
+              >
+                <option value="">Select one…</option>
+                <option value="full">The complete description</option>
+                <option value="snippet">An excerpt (partial)</option>
+              </select>
+            </Field>
+            <div className="search-actions">
+              <button type="submit" className="primary">
+                Review
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setImportForm(resetJobImportForm());
+                  setImportIssues([]);
+                  setImportError(null);
+                }}
+              >
+                Clear
+              </button>
+            </div>
+          </form>
+        )}
+
+        {importPhase.kind === 'review' && (
+          <div className="import-review">
+            <p className="hint">
+              <strong>Nothing is saved yet.</strong> This is exactly what will be stored:
+            </p>
+            <div className="import-review-card">
+              <strong className="import-review-title">{importPhase.candidate.title}</strong>
+              <span className="hint">
+                {[importPhase.candidate.company, importPhase.candidate.location]
+                  .filter((value): value is string => value !== undefined)
+                  .join(' · ')}
+              </span>
+              {importPhase.candidate.company === undefined &&
+                importPhase.candidate.location === undefined && (
+                  <p className="hint">No company or location was provided.</p>
+                )}
+              {importPhase.candidate.originalUrl !== undefined && (
+                <p className="hint">
+                  <a
+                    href={importPhase.candidate.originalUrl}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                  >
+                    {importPhase.candidate.originalUrl}
+                  </a>
+                </p>
+              )}
+              <p className="hint">
+                {importPhase.candidate.descriptionKind === 'full'
+                  ? 'Complete description'
+                  : 'Excerpt only — not the complete description'}
+                {' · '}source: manually entered
+              </p>
+              {importPhase.candidate.compensation !== undefined && (
+                <p className="hint">Compensation: {importPhase.candidate.compensation}</p>
+              )}
+              <div className="import-description">{importPhase.candidate.rawDescription}</div>
+            </div>
+
+            {importPhase.dupCheck !== null && (
+              <div className="duplicate-warning" role="alert" data-status={importPhase.dupCheck.status}>
+                <p className="warn">{importPhase.dupCheck.explanation}</p>
+                {importPhase.dupCheck.matches.length > 0 && (
+                  <ul className="duplicate-matches">
+                    {importPhase.dupCheck.matches.map((match) => (
+                      <li key={match.jobId}>
+                        <strong>{match.title}</strong>
+                        {match.company !== null && <span className="hint"> — {match.company}</span>}
+                        {match.originalUrl !== null && (
+                          <span className="hint">
+                            {' '}
+                            <a href={match.originalUrl} target="_blank" rel="noreferrer noopener">
+                              Saved listing
+                            </a>
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <p className="hint">
+                  Open the <strong>Jobs</strong> tab to inspect the saved record. Nothing is merged or
+                  overwritten — saving separately adds a new, separate record.
+                </p>
+              </div>
+            )}
+            {importPhase.dupNotice !== null && (
+              <div className="duplicate-warning" role="status" data-status="check-failed">
+                <p className="warn">{importPhase.dupNotice}</p>
+                <p className="hint">
+                  Duplicate protection could not run against your saved jobs. Saving separately still
+                  goes through the same validation and will not overwrite stored data it cannot read.
+                </p>
+              </div>
+            )}
+            {importError !== null && (
+              <div className="banner banner-error" role="alert" data-state="import-error">
+                {importError}
+              </div>
+            )}
+
+            <div className="search-actions">
+              <button type="button" onClick={onCancelImport}>
+                Cancel
+              </button>
+              {importPhase.dupCheck !== null || importPhase.dupNotice !== null ? (
+                <button
+                  type="button"
+                  className="primary"
+                  data-action="save-separately"
+                  onClick={() => void writeImport(true)}
+                >
+                  Save as a separate record
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="primary"
+                  data-action="save-import"
+                  onClick={() => void writeImport(false)}
+                >
+                  Save job
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {importPhase.kind === 'saved' && (
+          <div className="banner banner-info" role="status" data-state="import-saved">
+            <strong>Job saved.</strong>
+            <p>&ldquo;{importPhase.job.title}&rdquo; was added to your saved jobs.</p>
+            <button type="button" onClick={onImportAnother}>
+              Add another job
+            </button>
+            <p className="hint">
+              Open the <strong>Jobs</strong> tab to estimate a match, track an application or tailor a
+              resume — importing a job never does any of those automatically.
+            </p>
+          </div>
+        )}
+      </Section>
+
       <Section title="Adding jobs without live search">
         <p className="hint">
-          Live job search is unavailable until a secure search endpoint is configured. You can still
-          build your job list today: paste a listing&rsquo;s URL and description in
-          <strong> Jobs → Add job manually</strong>, or use <strong>Capture current job</strong> in
-          the popup while viewing a posting — both go through the same validation, duplicate
-          protection and storage as everything else.
+          Live job search is unavailable until a secure search endpoint is configured. The form
+          above is the way to get a listing in from anywhere: paste its title, URL and description,
+          review what will be stored, and save it through the same validation, duplicate protection
+          and storage everything else uses. For richer editing (extracted sections, work mode, dates)
+          use <strong>Jobs → Edit</strong>, and <strong>Capture current job</strong> in the popup
+          captures the page you are viewing.
         </p>
         <p className="hint">
-          Saving a search result, pagination and saved searches arrive with live search; nothing
-          found on this screen is saved or applied to automatically.
+          Search results, pagination and saved searches arrive with live search. Nothing found or
+          pasted here is saved without your confirmation, and nothing is applied to automatically.
         </p>
       </Section>
     </div>

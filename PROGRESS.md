@@ -1,5 +1,140 @@
 # PROGRESS
 
+## Done (2026-10-15, task 35 / Prompt 29: job import, normalization & duplicate-safe saving)
+A real, user-driven path for getting actual jobs into the app while live Adzuna
+search stays unavailable: paste a listing → **review exactly what will be
+stored** → duplicate-checked save. **No backend, no deployment, no paid service,
+no new dependency, no manifest change, no credential, no network request, no
+automatic application, and no fabricated listing.**
+
+### Files
+- **`src/lib/job-posting.ts`** — the canonical model gained three OPTIONAL fields
+  and a widened enum (see *Schema changes* below).
+- **`src/lib/job-search/candidates.ts`** (new) — `importCandidateSchema`,
+  `validateJobImportForm()`/`buildImportCandidate()`, the provider mapping
+  `candidateFromNormalizedJob()`, `providerSalaryText()`,
+  `identityForDuplicateCheck()` and `toJobPosting()`. Pure: no DOM, storage,
+  network, AI or clock.
+- **`entrypoints/options/JobSearchPanel.tsx`** — new **"Add a job from a
+  listing"** section with form → review → saved states, the existing duplicate
+  warning markup, Cancel/Save/Save-as-separate, and success/failure banners. The
+  search side is untouched (still unavailable, still zero requests).
+- **`entrypoints/options/style.css`** — an import block only.
+- **`src/lib/job-search/index.ts`** — re-exports `./candidates`.
+- **`src/lib/job-search/schemas.ts` / `adzuna/normalize.ts`** — now import
+  `MAX_EXTERNAL_ID_CHARS` from `job-posting.ts` instead of redefining it (single
+  source; removes a duplicated bound, no cycle).
+- **Docs** — `PROGRESS.md`, `README.md` (the "deferred import" paragraph is
+  replaced by the real feature) and `docs/adzuna-integration.md` §14.
+- Tests: **`src/lib/job-search/candidates.test.ts` (36)**,
+  **`src/lib/job-search/import-ui.test.ts` (15, jsdom)**, plus **6** new
+  backward-compatibility tests appended to `src/lib/job-posting.test.ts`.
+
+### Schema changes (explicit, backward compatible, tested)
+`jobPostingSchema` is `.strict()`, so the new keys had to be added to the model
+itself rather than passed around it:
+- `descriptionKind: 'full' | 'snippet'` **defaulted to `'full'`** — every record
+  stored by earlier prompts keeps its meaning (they really were complete pasted
+  or captured text) and no text is rewritten.
+- `externalId` (optional, ≤100) and `provider` (optional, ≤60) — the source's own
+  identifiers, never derived.
+- `source` widened from `['manual','page-capture']` to
+  **`['manual','page-capture','provider-search']`** — additive, so every stored
+  value remains valid and no unknown value is ever produced.
+There is **no migration**: old records parse unchanged, and a re-read of an
+upgraded record is a stable no-op (asserted). Tests also assert empty/over-long
+identifiers and unknown enum values are still rejected.
+
+### The import workflow
+1. **Form**: title + description (both required — the model requires text), an
+   optional company/location/URL, and an explicit choice of *complete
+   description* vs *excerpt* (never defaulted silently, so a short paste can
+   never present itself as a full posting). Friendly per-field messages; the
+   strict schema remains the authority.
+2. **Review**: `buildImportCandidate()` → `guardJobSave()` → a review card
+   showing title, company, location, link, description kind and the verbatim
+   text. **Nothing is written before this step**; Cancel keeps the entered
+   values.
+3. **Save**: `guardJobSave()` runs **again at the final write boundary** (it
+   re-reads persisted postings, never this component's state — Prompt 26.1), then
+   `toJobPosting()` re-validates through `jobPostingSchema` and
+   `upsertJobPosting()` writes.
+4. A **duplicate** shows the existing warning with the saved record for
+   inspection and the explicit **Save as a separate record** override; a failed
+   check shows the existing check-failed notice and still fails closed on write.
+
+### URL / security rules
+URLs are validated by the job-posting model's own `postingUrlSchema`
+(http/https only): `javascript:`, `data:`, `file:`, `ftp:`, `chrome:` and
+protocol-relative links are rejected, the message never echoes the value, and
+**nothing is ever fetched** — no scraping, no login bypass, and no claim that a
+URL is reachable or a listing still open.
+
+### Provider normalization (for future live use)
+`candidateFromNormalizedJob()` maps a validated `NormalizedJobResult` to a
+candidate: `source: 'provider-search'`, `provider` and `externalId` preserved
+exactly, listing URL preserved after validation, `descriptionKind: 'snippet'`
+always (a 500-character excerpt is never a full posting), posting date and
+salary only when the provider supplied them, and an explicit
+*"(currency not stated by the search provider)"* — no symbol is ever chosen. A
+result with **no** description is refused rather than padded. Fixtures are
+synthetic, parsed by Prompt 27's real schema, and exist only in the test file.
+
+### Duplicate & storage integrity (Prompt 26.1 rules unchanged)
+No merge, no overwrite, no silent reset of malformed storage, no stale React
+state at the final boundary, and the matching rules were not touched.
+
+### Tests (+57 → 1163 total; 63 files)
+- **`candidates.test.ts` (36)** — valid/invalid imports; required fields;
+  bounds; unsafe-URL matrix; blank URL; verbatim description preserved; strict
+  candidate schema rejects credential keys; description-kind rules; provider
+  mapping (identifiers preserved, missing fields absent, deterministic, no
+  description → typed failure, salary without a currency, end-to-end fixture
+  through the real normalizer); narrow duplicate identity; `toJobPosting`
+  re-validation; no `fetch` call.
+- **`import-ui.test.ts` (15, jsdom + mocked storage)** — import offered while
+  search stays unavailable (no fabricated results); accessible labels + submit
+  button; validation reported with nothing written; unsafe URL rejected and
+  never echoed; review writes nothing; excerpt labelled as excerpt; Cancel keeps
+  values; Save writes one posting with the right provenance and creates **no**
+  application record; "Add another job" resets; no network through the flow;
+  **duplicate at review** blocks and leaves the stored bytes identical, then
+  save-separately adds exactly one record; **duplicate added between review and
+  save** is caught at the final boundary; **malformed storage** reports the failed
+  check, refuses the write and leaves the malformed value byte-identical.
+- **`job-posting.test.ts` (+6)** — backward compatibility of the schema
+  extension (see above).
+- The Prompt 28 source-scan invariant was **deliberately updated**: it used to
+  forbid storage writes in the panel, which Prompt 29 requires. It now forbids
+  `calculateJobMatch`, `startTrackingApplication`, `loadJobPostings`,
+  `browser.storage`/`wxt/browser` and `fetch(`, and *requires* `guardJobSave(` +
+  `upsertJobPosting(` — a stricter, correct invariant.
+
+### Commands run this task (exit statuses captured inline)
+- `npx vitest run` → **exit 0, 1163/1163 passed** (63 files; 1106 before + 57 new)
+- `npm run compile` (tsc --noEmit) → **exit 0** (two compile errors and three
+  Prompt 28 test regressions found and fixed before committing)
+- `npm run build` (wxt build, chrome-mv3) → **exit 0**; manifest unchanged
+  (`storage`, `activeTab`, `scripting`; no host permissions)
+- Bundle scan of `.output/chrome-mv3` → no credential names and no
+  `api.adzuna.com` call target
+
+### Limitations / known issues
+- **Live search is still unavailable**; the import form is the real discovery
+  path today, and provider-result import is unreachable until an endpoint exists.
+- A manual import stores only what was pasted: no extracted sections, work mode,
+  experience range or posting date field in this form (use Jobs → Edit for those).
+- The search form has no pagination (page 1) and no saved searches or alerts.
+- Verification is jsdom-based, not a loaded-extension browser session (same
+  limitation as the repo's existing UI tests).
+
+### Next
+- Prompt 30 (not started — this task stops here): deploy the server-side search
+  proxy holding `app_id`/`app_key`, wire its endpoint, verify the live states
+  end to end (including the real overage status), then connect live results to
+  `candidateFromNormalizedJob()` so a search result can be imported as a snippet.
+
+---
 ## Done (2026-10-15, task 34 / Prompt 28: Job search UI foundation)
 The first usable job-discovery surface: a new **Options → "Job search" tab**
 reusing the existing full-page extension surface (no new entry point, no popup

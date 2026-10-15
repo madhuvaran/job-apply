@@ -365,4 +365,27 @@ select { max-width: 220px; }
 .search-salary { margin: 0; font-size: 0.9rem; }
 .search-result-actions { margin: 0; }
 .search-attribution { margin: 4px 0 0; font-size: 0.9rem; }
+
+/* Manual job import (Prompt 29): a review step that shows EXACTLY what will be
+   stored, plus the existing duplicate warning markup. */
+.import-review { display: flex; flex-direction: column; gap: 8px; }
+.import-review-card {
+  border: 1px solid #dbe0e6;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.import-review-title { font-size: 1.05rem; }
+.import-description {
+  white-space: pre-wrap;
+  background: #f9fafb;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 0.9rem;
+  max-height: 260px;
+  overflow: auto;
+  word-break: break-word;
+}
 .duplicate-matches button { margin-left: 6px; }

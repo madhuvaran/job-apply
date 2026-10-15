@@ -366,3 +366,75 @@ describe('upsertPostingInList + record schema', () => {
     expect(jobPostingsRecordSchema.safeParse({ postings: [{ junk: 1 }] }).success).toBe(false);
   });
 });
+
+/**
+ * Prompt 29 extends the model with descriptionKind / externalId / provider and a
+ * widened source enum. The extension MUST be backward compatible: records stored
+ * by earlier prompts keep parsing, keep their meaning, and gain no invented data.
+ */
+describe('import provenance fields (Prompt 29) are backward compatible', () => {
+  /** Exactly what an earlier prompt would have written (no new keys). */
+  const preTwentyNineRecord = {
+    id: 'job-old',
+    schemaVersion: '1',
+    title: 'Backend Engineer',
+    company: 'Acme',
+    location: 'Pune',
+    originalUrl: 'https://example.com/jobs/old',
+    rawDescription: 'Build and maintain APIs.',
+    capturedAt: CAPTURED_AT,
+    source: 'page-capture',
+  };
+
+  it('parses an old record unchanged and describes it as a full description', () => {
+    const parsed = jobPostingSchema.parse(preTwentyNineRecord);
+    expect(parsed.descriptionKind).toBe('full');
+    expect(parsed.source).toBe('page-capture');
+    expect(parsed.externalId).toBeUndefined();
+    expect(parsed.provider).toBeUndefined();
+    // Nothing else about the record changes.
+    expect(parsed.title).toBe('Backend Engineer');
+    expect(parsed.rawDescription).toBe('Build and maintain APIs.');
+    expect(parsed.originalUrl).toBe('https://example.com/jobs/old');
+    expect(parsed.capturedAt).toBe(CAPTURED_AT);
+  });
+
+  it('upgrades a whole stored record without rewriting or dropping entries', () => {
+    const upgraded = jobPostingsRecordSchema.parse({
+      schemaVersion: '1',
+      postings: [preTwentyNineRecord, minimal({ id: 'job-new' })],
+    });
+    expect(upgraded.postings).toHaveLength(2);
+    expect(upgraded.postings.map((posting) => posting.descriptionKind)).toEqual(['full', 'full']);
+    // Stable: re-reading the upgraded record changes nothing further.
+    expect(jobPostingsRecordSchema.parse(upgraded)).toEqual(upgraded);
+  });
+
+  it('accepts the new provenance values and still refuses unknown ones', () => {
+    expect(parse({ source: 'provider-search' }).source).toBe('provider-search');
+    expect(jobPostingSchema.safeParse(minimal({ source: 'scraper' })).success).toBe(false);
+    expect(parse({ descriptionKind: 'snippet' }).descriptionKind).toBe('snippet');
+    expect(jobPostingSchema.safeParse(minimal({ descriptionKind: 'partial' })).success).toBe(false);
+  });
+
+  it('accepts a source-published external id and provider, rejecting empty or over-long values', () => {
+    const parsed = parse({ externalId: 'job-42', provider: 'adzuna' });
+    expect(parsed.externalId).toBe('job-42');
+    expect(parsed.provider).toBe('adzuna');
+
+    for (const bad of [{ externalId: '  ' }, { externalId: 'x'.repeat(101) }]) {
+      expect(jobPostingSchema.safeParse(minimal(bad)).success).toBe(false);
+    }
+    for (const bad of [{ provider: ' ' }, { provider: 'x'.repeat(61) }]) {
+      expect(jobPostingSchema.safeParse(minimal(bad)).success).toBe(false);
+    }
+    // Strict: no unknown keys ride along with the new ones.
+    expect(jobPostingSchema.safeParse(minimal({ externalIdExtra: 'x' })).success).toBe(false);
+  });
+
+  it('keeps an unknown provider untouched (never mapped to a guessed name)', () => {
+    const parsed = parse();
+    expect('provider' in parsed).toBe(false);
+    expect('externalId' in parsed).toBe(false);
+  });
+});

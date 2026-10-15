@@ -600,22 +600,54 @@ location, posting date, salary, snippet). Missing company/location is stated as
 missing, a currency is **never invented** (the API does not state one), Jobsworth
 figures are labelled as estimates, each listing links out through the provider's
 own URL, and Adzuna's required attribution travels with the page (the documented
-116×23 hyperlinked credit). Discovery never writes storage, scores a match or
-tracks an application — saving and applying stay separate, user-controlled
-actions.
+116×23 hyperlinked credit). The **results** side never writes storage, scores a
+match or tracks an application — saving and applying stay separate,
+user-controlled actions (the import section below is the explicit save path).
 
-**Deferred to later prompts:** saving a search result into Jobs (the search
-response carries only a truncated 500-character snippet, which must not be stored
-as a posting's verbatim description), pagination, saved searches, alerts,
-polling, retries/backoff, caching and **any live request** — which needs a
-server-side proxy that holds the key and returns Adzuna-shaped JSON. No backend,
-deployment or paid service was created here.
+### Manual job import (Prompt 29)
 
-Adding a job you found elsewhere already works without Adzuna: paste its URL and
-description in **Jobs → Add job manually**, or use **Capture current job** in the
-popup. Both go through the same validation, duplicate protection and storage; a
-second import form was deliberately not added to the search panel because that
-would duplicate that existing, tested intake.
+The panel now has an **Add a job from a listing** section — the way to get real,
+user-sourced jobs in while live search is unavailable. Paste a title, company,
+optional listing URL, location and a description (or excerpt), state whether the
+text is complete or partial, then press **Review**.
+
+- **Nothing is written on paste.** Review shows exactly what will be stored and
+  the Save action is explicit; Cancel returns to your entered values. A success
+  and a failure state are both shown plainly.
+- **URLs use the job-posting model's own validator** (http/https only):
+  `javascript:`, `data:` and other schemes are rejected, and the link is never
+  fetched or scraped — you read the page yourself, the extension only stores what
+  you paste.
+- **Duplicate-safe through the existing guard.** `guardJobSave()` re-reads your
+  persisted jobs at review time **and again immediately before the write**, so a
+  vacancy saved from another tab in between is still caught. A match shows the
+  existing warning with the saved record to inspect and an explicit **Save as a
+  separate record** choice; nothing is merged, overwritten or silently replaced,
+  and unreadable storage fails closed instead of being reset to empty.
+- **Three optional fields were added** to the job-posting model —
+  `descriptionKind`, `externalId`, `provider` — plus a widened `source` enum
+  (`manual`, `page-capture`, `provider-search`). The change is additive and
+  backward compatible: records stored by earlier prompts parse unchanged, keep
+  their meaning (`descriptionKind` defaults to `full`, which is correct for them)
+  and gain no invented data.
+- **Snippet ≠ full description.** A pasted excerpt is stored as `snippet`, and a
+  provider result's 500-character excerpt is always `snippet` — never presented
+  as a complete posting.
+- **Importing ≠ applying.** No application-log entry, match estimate, tailoring
+  or export happens automatically; open the **Jobs** tab afterwards for those.
+
+**Deferred to later prompts:** pagination, saved searches, alerts, polling,
+retries/backoff, caching and **any live request** — which needs a server-side
+proxy that holds the key and returns Adzuna-shaped JSON. Saving an actual search
+*result* into Jobs is implemented and tested at the mapping level
+(`candidateFromNormalizedJob()`, synthetic fixtures only) but is unreachable until
+a live provider returns results. No backend, deployment or paid service was
+created here.
+
+Richer intake with extracted sections, work mode, experience range and dates
+remains in **Jobs → Add job manually**, and **Capture current job** in the popup
+captures the page you are viewing — both use the same validation, duplicate
+protection and storage.
 
 ## Autofill (deterministic foundation, no AI)
 
@@ -814,5 +846,5 @@ and no credential in the extension**), and the **Options → Job search UI**
 (Prompt 28 — full search form, all result and error states, and an honest
 "live search is unavailable" state; zero network requests while unconfigured).
 **Not yet built: any live job search (needs a deployed secure search proxy),
-saving a discovered job into Jobs, a Workday adapter, live wiring of the AI
-provider endpoint, and the deeper application-form automation.**
+provider-result import at runtime (needs live results), a Workday adapter, live
+wiring of the AI provider endpoint, and the deeper application-form automation.**

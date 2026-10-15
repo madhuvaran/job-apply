@@ -243,9 +243,20 @@ or paid service was created.**
   questions.
 - No caching, per the missing caching policy (§9).
 
-## 14. Exact next step (Prompt 28)
+## 14. Integration status (updated after Prompts 28 and 29)
 
-Deploy the **server-side search proxy** that holds `app_id`/`app_key`, attach
-that endpoint in settings, and confirm the real overage status code and India
-result quality against a configured developer account — then build the search UI
-on the normalized page this foundation already produces.
+- **Prompt 28** added the Options → Job search UI (form, every result/error state,
+  and the honest "unavailable" state). While unconfigured it performs **zero
+  network requests** and shows no example listings.
+- **Prompt 29** added **manual job import** (paste → review → duplicate-checked
+  save) inside that same tab. It does **not** depend on Adzuna and makes no
+  Adzuna request; the `NormalizedJobResult` → job-candidate mapping
+  (`candidateFromNormalizedJob()`) is implemented and tested with **synthetic,
+  test-only fixtures**, so it is ready but never exercised against the live API.
+  Imported jobs are never displayed as Adzuna search results.
+
+**Exact next step:** deploy the **server-side search proxy** that holds
+`app_id`/`app_key`, attach that endpoint, and confirm the real overage status code
+and India result quality against a configured developer account — then feed live
+results into the existing import mapping and verify attribution/linking behaviour
+end to end.
