@@ -332,4 +332,37 @@ select { max-width: 220px; }
 .duplicate-warning .hint { margin: 0; }
 .duplicate-matches { list-style: disc; margin: 0; padding-left: 20px; font-size: 0.9rem; }
 .duplicate-matches li { margin-bottom: 4px; }
+
+/* Job search (Prompt 28). The form reuses the shared .row/.row-label/.row-control
+   and .hint atoms; the results area is styled so that a failed or unavailable
+   search can never be mistaken for a successful zero-result search. */
+.job-search-panel { display: flex; flex-direction: column; gap: 16px; }
+.job-search-panel .hint { margin: 0; }
+.search-actions { display: flex; gap: 8px; margin: 12px 0 8px; }
+.field-error { color: #b91c1c; }
+
+.search-state { display: flex; flex-direction: column; gap: 8px; }
+.search-state-unavailable {
+  border: 1px solid #fde68a;
+  background: #fffbeb;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.search-count { margin: 0; }
+
+.search-results { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.search-result {
+  border: 1px solid #eef0f4;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.search-result-head { display: flex; flex-direction: column; gap: 2px; }
+.search-result-title { font-size: 1rem; }
+.search-snippet { margin: 0; font-size: 0.9rem; color: #374151; }
+.search-salary { margin: 0; font-size: 0.9rem; }
+.search-result-actions { margin: 0; }
+.search-attribution { margin: 4px 0 0; font-size: 0.9rem; }
 .duplicate-matches button { margin-left: 6px; }

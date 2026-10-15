@@ -1,5 +1,163 @@
 # PROGRESS
 
+## Done (2026-10-15, task 34 / Prompt 28: Job search UI foundation)
+The first usable job-discovery surface: a new **Options → "Job search" tab**
+reusing the existing full-page extension surface (no new entry point, no popup
+change, no backend, no deployment, no paid service, no new dependency, no
+permission or manifest change, and no credential anywhere). Live search is
+still **unavailable** and the UI says so plainly; it performs **zero network
+requests** and shows no example or fabricated listings.
+
+### Files
+- **`entrypoints/options/JobSearchPanel.tsx`** (new) — the panel (default
+  export), plus the exported `JobSearchResults` (all view states) and
+  `SearchResultCard`, and the deterministic `groupDigits`/`salaryText` helpers.
+- **`src/lib/job-search/ui.ts`** (new) — ALL of the logic, pure and
+  React-free: `JobSearchForm` + `EMPTY_JOB_SEARCH_FORM`/`resetJobSearchForm`,
+  `validateJobSearchForm()` (friendly per-field messages), `buildJobSearchRequest()`
+  (form → request, delegating the real validation to Prompt 27's
+  `validateAdzunaSearchRequest` schema), the `JobSearchViewState` union,
+  `initialJobSearchState()`, `searchStateFromRunResult()`, `executeJobSearch()`,
+  the verified-enum option lists (`JOB_SEARCH_COUNTRY_OPTIONS`,
+  `ADZUNA_COUNTRY_LABELS`, `JOB_SEARCH_SORT_OPTIONS`), the single
+  `EXTENSION_JOB_SEARCH_CONFIG` constant and `createUnconfiguredSearchProvider()`.
+- **`entrypoints/options/App.tsx`** — added the `search` tab (nav button, title,
+  render branch). No other screen changed.
+- **`entrypoints/options/style.css`** — a `/* Job search (Prompt 28) */` block
+  only; the form reuses the existing `.row`/`.row-label`/`.row-control`/`.hint`
+  atoms.
+- **`src/lib/job-search/index.ts`** — re-exports `./ui`.
+- Tests: **`src/lib/job-search/ui.test.ts` (33)** and
+  **`src/lib/job-search/job-search-ui.test.ts` (28, jsdom)**.
+
+### Architecture decision (where it belongs)
+The popup stays a lightweight quick-action surface (scan page → autofill), so
+discovery lives in the **existing Options page** as a fifth tab beside Jobs.
+No new extension entry point, no hosted dashboard or web app was introduced.
+
+### Search fields and behaviour
+Keywords (required), location (optional), **country from the verified 19-code
+enum only** (India included), search radius in km (documented `distance`;
+**disabled until a location is entered**, since it is meaningless without one),
+posted-within days (documented `max_days_old`) and sort order (documented
+`sort_by` values only). Live inline validation with real `<label for>`-associated
+controls, `aria-invalid`/`aria-describedby`, a Search button that is **disabled
+whenever the provider is unavailable or the form is invalid** (with the reason
+shown), and a Clear/reset action that empties every field and returns to the
+start state. A trailing blank line-artifact: none — only fields the provider
+supplied are rendered.
+
+**Remote preference was deliberately NOT added**: the verified contract has no
+remote-work filter, and the prompt forbids presenting unsupported controls as if
+they filtered anything. No such control exists anywhere in the panel (asserted).
+
+### States handled (all implemented; the last five are unreachable at runtime
+until a provider is configured, and are covered by tests)
+`initial` (no search yet) · `unavailable` (no secure endpoint — the only state
+this build can reach) · `invalid` (typed form issues) · `loading` ·
+`results` (validated normalized page) · `results` with **zero** listings (worded
+as a successful empty search) · and **distinct** errors for
+`rate-limited`/`unauthenticated`, `network`, `server`, `provider-rejected` and
+`invalid-response`. A failure is never rendered as an empty successful search
+(asserted: the error state never contains the zero-result wording, and the
+non-`results` states render no result cards).
+
+### No-hosting compliance
+`EXTENSION_JOB_SEARCH_CONFIG` is `{ enabled: true }` **with no endpoint** — so
+availability reports `not-configured` ("needs a configured secure search
+endpoint … not available in this build") rather than the misleading `disabled`
+("turned off in settings"), which would claim a setting the app does not have.
+There is no user-editable endpoint and no key field (Prompt 27 forbids arbitrary
+URLs); `createUnconfiguredSearchProvider()` throws if ever called, so a future
+change that enables search without wiring a real provider fails loudly as a
+typed `provider-fault` instead of silently appearing to work. Verified in the
+built bundle: **no `app_key`/`app_id`/`api_key`/`bearer`, no `api.adzuna.com`
+call target** — the only vendor strings are the provider id and the attribution
+URL `https://www.adzuna.co.uk/`.
+
+### Attribution, links and honesty for future listings
+Result cards render the provider's own listing URL (strictly validated by
+Prompt 27) with `rel="noreferrer noopener"`, mark missing company/location as
+missing, **never invent a currency** (the API states none — the line says so),
+label Jobsworth figures as estimates, and each page carries Adzuna's required
+attribution at the documented minimum size (`min-width:116px`;
+`min-height:23px`) linked to Adzuna. Nothing implies a manually entered or
+imported job came from Adzuna.
+
+### Local import fallback — DEFERRED (with reason, per Prompt 28 §5)
+Two related actions were intentionally not added:
+1. **Import a job locally** — already implemented and tested in Options → Jobs
+   (*Add job manually*: URL + description + validation + duplicate guard +
+   storage) and in the popup (*Capture current job*). A second form in the search
+   panel would duplicate that intake, so the panel instead points users to it.
+2. **Save a search result into Jobs** — deferred to Prompt 29. The provider's
+   search response carries only a **truncated 500-character snippet**, and a
+   posting's `rawDescription` is stored **verbatim** and feeds resume tailoring
+   and match estimation; storing a snippet as if it were the full description
+   would misrepresent it. Saving also needs a new `source` value, which is a
+   posting-model change that does not belong in this prompt.
+
+Discovery therefore never writes storage, scores a match or starts an
+application (asserted by a source scan of both new files for
+`upsertJobPosting`/`guardJobSave`/`createJobPosting`/`calculateJobMatch`/
+`startTrackingApplication`/`loadJobPostings`/`browser.storage`/`fetch(`).
+
+### Tests (+61 → 1103 total; 60 files)
+- **`ui.test.ts` (33, pure)** — options come from the verified enum (India
+  included, every country labelled, only documented sort values); validation
+  requires keywords + a supported country, enforces the same bounds as the
+  provider schema, ignores a radius without a location, and never echoes a
+  value; `buildJobSearchRequest` sends only what was provided, applies the
+  schema's own `page`/`resultsPerPage` defaults, drops a locationless radius and
+  can carry **no** credential/profile key; the build reports `not-configured`
+  and the unconfigured transport throws rather than returning fake jobs;
+  `executeJobSearch` returns `unavailable` with **zero provider calls**, reports
+  `invalid` without calling, returns `results` (incl. a genuinely empty page) for
+  a valid payload, and maps unauthenticated / rate-limited / network / server /
+  provider-rejected / malformed / unreadable-payload / thrown-provider to the
+  right typed error — never to an empty success.
+- **`job-search-ui.test.ts` (28, jsdom + `react-dom/server`)** — every state
+  rendered from fixtures built by the REAL Prompt 27 normalizer; a failed search
+  never shows the zero-result wording and a zero-result page never shows error
+  wording; optional fields render only when supplied (minimal listing states the
+  missing company/location, omits salary, still shows the date the provider DID
+  state, and leaves no empty placeholder span); no currency is ever rendered;
+  counts are locale-independent; inaccessible-listing counts are surfaced. Panel
+  behaviour: unavailable state + **disabled Search** + no fabricated listings +
+  **`fetch` never called**; lists exactly 19 countries and no remote control;
+  inline validation appears and clears; radius disabled until a location exists
+  and bounds are reported; Clear empties the form and resets the view;
+  accessibility (form `aria-label`, every control programmatically labelled,
+  real buttons, live `role="status"` regions).
+
+### Commands run this task (exit statuses captured inline)
+- `npx vitest run` → **exit 0, 1103/1103 passed** (60 files; 1042 before + 61 new)
+- `npm run compile` (tsc --noEmit) → **exit 0** (four test-only type errors found
+  and fixed before committing)
+- `npm run build` (wxt build, chrome-mv3) → **exit 0**; the new tab is present in
+  the built options chunk, and the manifest is unchanged
+  (`storage`, `activeTab`, `scripting`; no host permissions)
+- Bundle scan of `.output/chrome-mv3` → no credential names, no
+  `api.adzuna.com` call target, no new permissions or entry points
+
+### Limitations / known issues
+- **Live search is not available** and cannot be until a secure `https` proxy
+  holding the credentials is deployed and configured; Search stays disabled.
+- Only the `unavailable` state is reachable at runtime in this build; the other
+  states are implemented and test-verified but not observable without a provider.
+- Pagination is fixed at page 1; nothing is cached (no documented caching rule).
+- Saving a discovered job, saved searches and alerts are deferred (see above).
+- UI verification is **jsdom-based**, not a real loaded-extension session — the
+  repo's existing UI tests have the same limitation, and a plain browser tab
+  cannot stand in for the extension (other tabs use `chrome.storage`).
+
+### Next
+- Prompt 29 (not started — this task stops here): deploy the server-side search
+  proxy that holds `app_id`/`app_key`, configure its endpoint, verify the live
+  states (including the real overage status) end to end, and then add
+  save-from-search with an honest handling of the truncated snippet.
+
+---
 ## Done (2026-10-15, task 33 / Prompt 27: Adzuna job-search feasibility + integration foundation)
 Provider-agnostic job-discovery foundation plus a feasibility-verified Adzuna layer.
 **No live search, no UI, no saved search/alert/polling, no backend, no deployment,

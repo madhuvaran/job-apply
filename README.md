@@ -578,10 +578,44 @@ a typed provider contract, and the Adzuna transport + orchestrator with typed
 errors (invalid request, unauthenticated, rate-limited, network, server,
 invalid response, not-configured, timeout, provider fault).
 
-**Deferred to later prompts:** the search UI, saved searches, alerts, polling,
-retries/backoff, caching and any live request. To go live you need a server-side
-proxy that holds the key and returns Adzuna-shaped JSON — no backend,
+### Options → Job search (Prompt 28)
+
+A new **Job search** tab (beside Jobs) is the first discovery UI. Its form takes
+keywords, an optional location, a country from the **verified enum only**
+(19 countries, India included) and the supported optional filters — posted-within
+days, radius in km (enabled only once a location is entered) and sort order — with
+live inline validation and a Clear/reset action.
+
+Because no secure endpoint is configured, **the Search button is disabled and the
+panel states plainly that live search is not available in this build**. It makes
+**zero network requests** and shows no example or fabricated listings. The results
+area still implements every state so it works the moment a provider is wired up:
+initial, unavailable, invalid, loading, results, results-with-zero (from the
+normalized page), and **distinct** errors for rate-limit/authentication, network,
+server and unreadable responses — a failure is never rendered as an empty
+successful search.
+
+Result cards render only fields the provider actually supplied (company,
+location, posting date, salary, snippet). Missing company/location is stated as
+missing, a currency is **never invented** (the API does not state one), Jobsworth
+figures are labelled as estimates, each listing links out through the provider's
+own URL, and Adzuna's required attribution travels with the page (the documented
+116×23 hyperlinked credit). Discovery never writes storage, scores a match or
+tracks an application — saving and applying stay separate, user-controlled
+actions.
+
+**Deferred to later prompts:** saving a search result into Jobs (the search
+response carries only a truncated 500-character snippet, which must not be stored
+as a posting's verbatim description), pagination, saved searches, alerts,
+polling, retries/backoff, caching and **any live request** — which needs a
+server-side proxy that holds the key and returns Adzuna-shaped JSON. No backend,
 deployment or paid service was created here.
+
+Adding a job you found elsewhere already works without Adzuna: paste its URL and
+description in **Jobs → Add job manually**, or use **Capture current job** in the
+popup. Both go through the same validation, duplicate protection and storage; a
+second import form was deliberately not added to the search panel because that
+would duplicate that existing, tested intake.
 
 ## Autofill (deterministic foundation, no AI)
 
@@ -776,7 +810,9 @@ company+title rules, ambiguous matches never auto-picked, nothing merged or
 overwritten), and the **Adzuna job-search foundation** (Prompt 27 — strict
 request/response schemas, normalization, a typed provider contract and a
 secure-proxy transport; **shipped unconfigured, with no live search, no backend
-and no credential in the extension**).
-**Not yet built: any live job search or search UI (both need a deployed secure
-search proxy), a Workday adapter, live wiring of the AI provider endpoint, and
-the deeper application-form automation.**
+and no credential in the extension**), and the **Options → Job search UI**
+(Prompt 28 — full search form, all result and error states, and an honest
+"live search is unavailable" state; zero network requests while unconfigured).
+**Not yet built: any live job search (needs a deployed secure search proxy),
+saving a discovered job into Jobs, a Workday adapter, live wiring of the AI
+provider endpoint, and the deeper application-form automation.**

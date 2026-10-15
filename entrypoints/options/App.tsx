@@ -32,6 +32,7 @@ import {
 import { sampleProfile } from '../../src/lib/sample-profile';
 import type { Profile } from '../../src/lib/profile';
 import SettingsPanel from './SettingsPanel';
+import JobSearchPanel from './JobSearchPanel';
 import JobsPanel from './JobsPanel';
 import ApplicationsPanel from './ApplicationsPanel';
 import { Row, Section } from './ui';
@@ -43,7 +44,7 @@ type SaveState =
   | { kind: 'saved'; at: string }
   | { kind: 'error'; message: string };
 
-type Tab = 'profile' | 'settings' | 'jobs' | 'applications';
+type Tab = 'profile' | 'settings' | 'search' | 'jobs' | 'applications';
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('profile');
@@ -149,9 +150,11 @@ export default function App() {
             ? 'Master profile'
             : tab === 'settings'
               ? 'Settings & privacy'
-              : tab === 'jobs'
-                ? 'Jobs'
-                : 'Applications'}
+              : tab === 'search'
+                ? 'Job search'
+                : tab === 'jobs'
+                  ? 'Jobs'
+                  : 'Applications'}
         </h1>
         <nav className="tabs" aria-label="Options sections">
           <button
@@ -169,6 +172,14 @@ export default function App() {
             onClick={() => setTab('settings')}
           >
             Settings &amp; privacy
+          </button>
+          <button
+            type="button"
+            className={tab === 'search' ? 'tab active' : 'tab'}
+            aria-current={tab === 'search' ? 'page' : undefined}
+            onClick={() => setTab('search')}
+          >
+            Job search
           </button>
           <button
             type="button"
@@ -190,7 +201,9 @@ export default function App() {
         {tab === 'profile' && <SaveStatus state={saveState} dirty={dirty} />}
       </header>
 
-      {tab === 'jobs' ? (
+      {tab === 'search' ? (
+        <JobSearchPanel />
+      ) : tab === 'jobs' ? (
         <JobsPanel />
       ) : tab === 'applications' ? (
         <ApplicationsPanel />
