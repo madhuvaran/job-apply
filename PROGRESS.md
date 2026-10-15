@@ -27,8 +27,9 @@ requests** and shows no example or fabricated listings.
   only; the form reuses the existing `.row`/`.row-label`/`.row-control`/`.hint`
   atoms.
 - **`src/lib/job-search/index.ts`** — re-exports `./ui`.
-- Tests: **`src/lib/job-search/ui.test.ts` (33)** and
-  **`src/lib/job-search/job-search-ui.test.ts` (28, jsdom)**.
+- Tests: **`src/lib/job-search/ui.test.ts` (33)**,
+  **`src/lib/job-search/job-search-ui.test.ts` (28, jsdom)** and
+  **`src/lib/job-search/options-search-tab.test.ts` (3, jsdom, Options wiring)**.
 
 ### Architecture decision (where it belongs)
 The popup stays a lightweight quick-action surface (scan page → autofill), so
@@ -102,7 +103,7 @@ application (asserted by a source scan of both new files for
 `upsertJobPosting`/`guardJobSave`/`createJobPosting`/`calculateJobMatch`/
 `startTrackingApplication`/`loadJobPostings`/`browser.storage`/`fetch(`).
 
-### Tests (+61 → 1103 total; 60 files)
+### Tests (+64 → 1106 total; 61 files)
 - **`ui.test.ts` (33, pure)** — options come from the verified enum (India
   included, every country labelled, only documented sort values); validation
   requires keywords + a supported country, enforces the same bounds as the
@@ -129,9 +130,15 @@ application (asserted by a source scan of both new files for
   and bounds are reported; Clear empties the form and resets the view;
   accessibility (form `aria-label`, every control programmatically labelled,
   real buttons, live `role="status"` regions).
+- **`options-search-tab.test.ts` (3, jsdom, mocked extension storage)** — mounts
+  the real Options `App`: the **Job search** tab is offered in order alongside the
+  existing sections, opening it renders the panel, marks the tab
+  `aria-current="page"`, shows the honest `unavailable` state with Search disabled
+  and no fabricated listings, and switching back to Profile restores that
+  section — the entry point the user actually clicks is exercised.
 
 ### Commands run this task (exit statuses captured inline)
-- `npx vitest run` → **exit 0, 1103/1103 passed** (60 files; 1042 before + 61 new)
+- `npx vitest run` → **exit 0, 1106/1106 passed** (61 files; 1042 before + 64 new)
 - `npm run compile` (tsc --noEmit) → **exit 0** (four test-only type errors found
   and fixed before committing)
 - `npm run build` (wxt build, chrome-mv3) → **exit 0**; the new tab is present in
