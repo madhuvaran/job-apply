@@ -24,6 +24,140 @@ Prompt 30 after earlier prompts proposed deploying a search proxy.
   deterministic prioritization, the dashboard, and the existing resume and
   application workflows. No new AI-provider calls and no new permissions.
 
+## Done (2026-10-17, task 37 / Prompt 31: automated loaded-extension smoke tests)
+The repository's first committed **browser** test harness: Playwright launches
+**Chromium with the actual built MV3 extension loaded** (`.output/chrome-mv3`),
+resolves the extension id from the running service worker, and drives the real
+Options and popup documents. **25 tests passed, 1 deliberately skipped** (see
+limitations). One dev dependency was added (`@playwright/test`); no product
+feature, manifest, permission or runtime behaviour changed.
+
+### Environment findings (before writing any test)
+- No browser was installed (`chromium`, `chrome`, `google-chrome` all absent),
+  no Playwright/Puppeteer in `node_modules`, no `~/.cache/ms-playwright`, no
+  Xvfb/display, and no passwordless sudo. Most Chromium runtime libraries were
+  missing (libnss3, libatk, libcups, libxkbcommon, pango, cairo, …).
+- Prompt 21's real-browser verification had used a throwaway harness on a
+  Windows host; nothing was committed, so there was no harness to reuse.
+- Network to the npm registry and Ubuntu archive was available.
+
+### What was provisioned (machine-local, NOT committed)
+- `npm install -D @playwright/test` (1.64.1) — the only automation framework in
+  the repo; no second framework was added.
+- `npx playwright install chromium` → Chromium build 156.0.8078.4 in the user
+  cache (not in the repo).
+- Because the VM is rootless and lacked Chromium's shared libraries, a private
+  runtime sysroot was assembled from **53 Ubuntu 24.04 `.deb` packages** using
+  user-scoped apt lists and `dpkg-deb -x` (no system packages changed). A minimal
+  `fonts.conf` points fontconfig at the extracted fonts. The fixture understands
+  `CHROMIUM_SYSROOT`, or `~/.local/chromium-sysroot` automatically, and prepends
+  the sysroot libraries / fontconfig file for the browser process, so
+  `npm run test:e2e` needs no environment variables here. On a normal machine `npx playwright install --with-deps chromium` is
+  enough and the variable is unnecessary.
+
+### Files
+- **`playwright.config.ts`** — `testDir: e2e`, serial (`workers: 1`), no retries,
+  list reporter, `test-results` output (ignored).
+- **`e2e/fixtures.ts`** — launches the persistent Chromium context with
+  `--load-extension`/`--disable-extensions-except` on the built extension in a
+  fresh temp profile; waits for the MV3 service worker (extension id); opens
+  `options.html`; captures console errors, `pageerror`, `webError` (unhandled
+  rejections) and every page/worker HTTP(S) request; exposes `seed`/`read`/
+  `clear`/`reload`/`openTab`; asserts a clean console and zero external requests
+  at teardown; fails with an actionable message when the build or browser is
+  missing (never skips silently).
+- **`e2e/options-dashboard.spec.ts`** (7), **`e2e/job-import-duplicates.spec.ts`**
+  (6), **`e2e/applications.spec.ts`** (4), **`e2e/resume-export.spec.ts`** (3),
+  **`e2e/popup.spec.ts`** (2 + 1 explicit skip), **`e2e/privacy.spec.ts`** (3).
+- **`package.json`** — `test:e2e` script (`npm run build && playwright test`),
+  `@playwright/test` devDependency; **`.gitignore`** — `test-results`,
+  `playwright-report`.
+- **`docs/browser-tests.md`** (new) — setup, run commands, coverage table,
+  limitations, guidance for new tests.
+- Docs: `README.md` (testing section, tab list corrected, roadmap),
+  `PROGRESS.md` (this section).
+
+### Measured results (this VM, rootless, headless Chromium 156)
+| Command | Exit | Result |
+|---|---|---|
+| `npm run test:e2e` (build + full suite) | **0** | **25 passed, 1 skipped** (45.2 s) |
+| `npx playwright test` (same suite, prebuilt) | **0** | **25 passed, 1 skipped** (48.9 s) |
+| `npm run test:e2e`, clean shell, **no env vars** | **0** | **25 passed, 1 skipped** (51.3 s) |
+| `npx vitest run` | **0** | 1225/1225 passed (68 files) |
+| `npm run compile` | **0** | includes `e2e/` typecheck |
+| `npm run build` | **0** | manifest unchanged |
+
+### What the browser tests actually proved
+- **Dashboard:** boots with no console/page errors or unhandled rejections; six
+  tabs with Dashboard `aria-current`; counts derived from records written to
+  `chrome.storage.local` (saved jobs, needs-review, submitted excluding
+  `planned`, interviews); a real match estimate and `apply-first` row from a
+  stored profile; Refresh re-reads storage while no polling occurs in between;
+  *View job details* opens the saved job in the existing Jobs tab (match-summary
+  section visible); Dashboard/Jobs/Profile navigation, including the one-shot
+  focus being cleared by the Jobs tab; malformed job storage shown as
+  **Unavailable**, with the malformed bytes untouched; empty store renders real
+  zeros and honest empty messages.
+- **Job intake / duplicates:** one valid save (and no application record);
+  visible validation for a missing title; `javascript:` URL rejected with the
+  field path; duplicate warning + Cancel (nothing saved) + explicit save-separately
+  (two distinct records, original unchanged); a duplicate written **while the form
+  is open** is caught at the write boundary; malformed storage refuses both the
+  normal save and the override without replacing the bytes.
+- **Applications:** stored rows with job titles/statuses; status filter;
+  a status change through the row control persists and reaches the dashboard;
+  `planned` labelled *not submitted* and never counted as submitted; saving a job
+  leaves the application log byte-identical.
+- **Resume exports:** PDF download captured from the real browser (`%PDF-`,
+  > 1 KB, `resume-backend-engineer-tailored.pdf`, success notice); DOCX captured
+  and unzipped (ZIP signature, `[Content_Types].xml`, `_rels/.rels`,
+  `word/document.xml`, fake content present, no tables/drawings/hyperlinks); a
+  version saved before a profile edit exports the **stored snapshot**
+  (`ORIGINAL…TOKEN` present, `EDITED…TOKEN` absent); an XML-invalid character
+  produces a visible error, no download and no success message.
+- **Popup / privacy:** popup document renders with no form and no request;
+  build text has no `app_id`/`app_key`/`api.adzuna.com`/provider keys; manifest
+  keeps exactly `storage`, `activeTab`, `scripting` with no host permissions and
+  only the pre-existing `*://*.google.com/*` content script; dashboard, job save,
+  applications and the unavailable Job search make **zero external requests**.
+
+### Defects found
+No product defect was exposed. Four issues during bring-up were test-side and
+were fixed: two strict-mode selectors that matched more than one element, one
+match-estimate fixture that used skills outside the matching vocabulary (so it
+correctly produced "insufficient data"), and one application fixture that applied
+a second record to the same job and therefore moved it out of the shortlist.
+
+### Limitations (reported, not hidden)
+- Headless **Chromium build** only — not Chrome-stable/headful (Chrome ≥ 137
+  removed `--load-extension`) and not Firefox.
+- **Autofill/capture is not exercised end-to-end:** it needs the `activeTab`
+  grant from a real toolbar click, which Playwright cannot perform; opening
+  `popup.html` as a tab makes that tab active. It is recorded as an explicit
+  skipped test; safety remains covered by the unit/jsdom suites.
+- No real job sites, no authenticated accounts, no form submissions.
+- Downloads are verified structurally (PDF signature/size, DOCX ZIP parts); no
+  claim is made that Word or a PDF viewer renders them.
+- Network assertions are request-level (pages/workers), not OS packet capture.
+- The rootless sysroot *contents* are environment scaffolding, not part of the
+  repo; a fresh VM needs the same provisioning (or a machine with browser
+  dependencies). Only its conventional location is known to the fixture.
+- **Defect found while verifying the documented command:** `npm run test:e2e`
+  failed every browser test (`libnspr4.so: cannot open shared object file`)
+  because the fixture only honoured an explicit `CHROMIUM_SYSROOT`, which earlier
+  ad-hoc runs had set. It now auto-detects the prefix, so the documented command
+  works in a clean shell; the failure mode stays loud (launch error naming the
+  missing library) rather than skipped.
+
+### Next
+- **Prompt 32 (recommended):** build the local "needs attention" dashboard
+  section (due/overdue follow-ups, stale applications, postings past the
+  freshness window) — no notifications, permissions, hosting or AI — and add
+  loaded-extension tests for it in the new `e2e/` harness as part of the
+  definition of done.
+
+---
+
 ## Done (2026-10-17, task 36 / Prompt 30: local job prioritization + dashboard foundation)
 The first working **Dashboard** for the extension, built entirely on data this
 browser already stores. **No backend, no deployment, no paid service, no live

@@ -11,17 +11,46 @@ npm install        # install dependencies (also runs `wxt prepare`)
 npm run dev        # load-as-you-go development build
 npm run build      # production build -> .output/chrome-mv3
 npm run compile    # typecheck (tsc --noEmit)
-npx vitest run     # unit tests
+npx vitest run     # unit tests (jsdom)
+npm run test:e2e   # browser smoke tests: builds, then loads the extension in Chromium
 ```
 
 Load the built extension in Chrome: `chrome://extensions` → enable Developer mode →
 **Load unpacked** → select `.output/chrome-mv3`.
 
+### Browser smoke tests (real loaded extension)
+
+`npm run test:e2e` builds `.output/chrome-mv3` and runs the Playwright suite in
+`e2e/`. The suite launches Chromium with `--load-extension` on that build (not a
+jsdom mount, not a normal web page), using a throwaway profile, and drives the
+real Options and popup documents. Setup once per machine:
+
+```bash
+npx playwright install chromium          # browser binary
+# Linux only, when system libraries are missing:
+#   npx playwright install-deps chromium  (needs root)
+#   …or unpack the libs into ~/.local/chromium-sysroot (auto-detected),
+#   or point CHROMIUM_SYSROOT at such a prefix
+```
+
+Covered and verified: Options/dashboard boot with no console errors or unhandled
+rejections, real counts from seeded `chrome.storage.local` records, Refresh
+re-reading storage (and no background polling), View job details opening the
+existing Jobs tab, empty/malformed/partial storage states, manual job save,
+validation and unsafe URLs, duplicate warning + save-separately + cancel, the
+pre-write duplicate re-check, application filter/status controls and dashboard
+metrics, PDF/DOCX downloads captured from the browser and inspected by
+signature/package structure (including a historical snapshot export), popup
+render, and zero external HTTP(S) requests in every test. Details and
+limitations: `docs/browser-tests.md`.
+
 ## Options page
 
-Click the extension's **Options** (right-click the toolbar icon → Options). Three
+Click the extension's **Options** (right-click the toolbar icon → Options). Six
 tabs; everything is stored **locally** via `chrome.storage.local`:
 
+- **Dashboard** — read-only overview of saved jobs, prioritization counts,
+  application metrics and the actionable shortlist (see *Dashboard* below).
 - **Profile** — master profile editor (identity, skills, work history, education,
   certifications, projects, links, explicit application answers). Unsaved changes
   are protected; Save is disabled while invalid; corrupt data is never silently
@@ -47,7 +76,8 @@ tabs; everything is stored **locally** via `chrome.storage.local`:
   filled in from the capture time, and saved jobs show a readable local date or
   **"Posting date unknown"**. A saved date after today is flagged
   **“Future posting date — verify”** rather than presented as fresh. Nothing
-expires and nothing is sorted by freshness (no prioritization feature exists). **Estimate match** selects a saved job and renders the
+expires, and the freshness-aware **priority shortlist** below is a review order,
+not an expiry or a live-feed ranking. **Estimate match** selects a saved job and renders the
   deterministic match summary (see below): the score is labelled an estimate,
   confidence/completeness and assessable scoring weight appear as separate
   badges, and matched / partial / missing (confirmed) / unknown requirements
@@ -909,9 +939,13 @@ and no credential in the extension**), and the **Options → Job search UI**
 (Prompt 28 — full search form, all result and error states, and an honest
 "live search is unavailable" state; zero network requests while unconfigured),
 the **job import + duplicate-safe saving workflow** (Prompt 29 — paste a listing,
-review exactly what will be stored, duplicate-checked save), and the **local job
+review exactly what will be stored, duplicate-checked save), the **local job
 prioritization + Dashboard** (Prompt 30 — saved-vs-saved duplicate indications
-and the read-only Options → Dashboard overview described above).
+and the read-only Options → Dashboard overview described above), and **automated
+loaded-extension browser smoke tests** (Prompt 31 — the Playwright suite in
+`e2e/` runs the built MV3 extension in Chromium and verifies the dashboard, job
+intake/duplicates, application tracking, resume downloads, popup render and the
+no-external-request guarantee; see `docs/browser-tests.md`).
 
 **Roadmap constraints (standing):** no backend hosting, no paid services and no
 exposed API credentials. Adzuna live search stays deferred until a secure,
