@@ -40,6 +40,7 @@ import {
   duplicateCandidateSchema,
   MAX_DUPLICATE_MATCHES,
   MIN_IDENTITY_CHARS,
+  savedDuplicateIndicationSchema,
   savedExternalIdSchema,
   type DuplicateCandidate,
   type DuplicateCheckOutcome,
@@ -47,6 +48,7 @@ import {
   type DuplicateMatch,
   type DuplicateMethod,
   type DuplicateReasonCode,
+  type SavedDuplicateIndication,
   type SavedExternalId,
 } from './schemas';
 
@@ -333,3 +335,155 @@ function resolve(
 
 /** The methods, exported for UI copy/tests (documented order). */
 export const DUPLICATE_METHOD_ORDER: readonly DuplicateMethod[] = DUPLICATE_METHODS;
+
+/* ------------------------------------------------------------------ */
+/* Saved jobs vs saved jobs (Prompt 30)                                */
+/* ------------------------------------------------------------------ */
+
+export interface SavedDuplicatesInput {
+  /** Saved posting records (unvalidated; invalid records are skipped). */
+  savedJobs: readonly unknown[];
+}
+
+export type SavedDuplicatesOutcome =
+  | {
+      kind: 'valid';
+      /** One indication per VALID saved job id (never for skipped records). */
+      byJobId: ReadonlyMap<string, SavedDuplicateIndication>;
+      inspectedJobs: number;
+      skippedJobs: number;
+    }
+  | { kind: 'invalid'; issues: string[] };
+
+const RELATIONSHIP_SEPARATOR = '\u0000';
+
+/** Build an indication through the strict schema (invariant, never trusted). */
+function indication(
+  status: SavedDuplicateIndication['status'],
+  method: DuplicateMethod | null,
+  equivalentJobIds: string[],
+): SavedDuplicateIndication {
+  return savedDuplicateIndicationSchema.parse({ status, method, equivalentJobIds });
+}
+
+function addToGroup(groups: Map<string, string[]>, key: string, jobId: string): void {
+  const existing = groups.get(key);
+  if (existing === undefined) groups.set(key, [jobId]);
+  else if (!existing.includes(jobId)) existing.push(jobId);
+}
+
+/** Every OTHER job id in the group: de-duplicated, sorted, bounded. */
+function otherIds(group: string[] | undefined, selfId: string): string[] {
+  if (group === undefined) return [];
+  return [...new Set(group)]
+    .filter((id) => id !== selfId)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+    .slice(0, MAX_DUPLICATE_MATCHES);
+}
+
+/**
+ * Deterministic SAVED-vs-SAVED duplicate indications (Prompt 30).
+ *
+ * Reuses the detector's own documented rules and helpers — canonical URL,
+ * external identifier scoped to the same source domain, then normalized
+ * company+title — but compares the saved list with ITSELF instead of with a
+ * candidate. First matching rule wins, so the strongest evidence decides.
+ *
+ * Boundaries (deliberate):
+ * - It NEVER reads storage, never writes/merges/deletes a record, never touches
+ *   the clock, the DOM, the network or an AI provider, and never mutates input.
+ * - Malformed saved records are skipped (never trusted as evidence).
+ * - Records are keyed by id, so a repeated id collapses to one entry and the
+ *   output is independent of the input order.
+ * - Weak company+title hits are ALWAYS `possible`, even when several records
+ *   share it — three "Engineer at Acme" postings are a reason to look, not
+ *   proof of equivalence.
+ * - `equivalentJobIds` carries job ids only (no titles/companies/text).
+ */
+export function findSavedJobDuplicates(input: SavedDuplicatesInput): SavedDuplicatesOutcome {
+  if (input === null || typeof input !== 'object' || !Array.isArray(input.savedJobs)) {
+    return { kind: 'invalid', issues: ['savedJobs: invalid_type'] };
+  }
+
+  /* --- validate + dedupe by id, then sort by id (order-independent) --- */
+  const byId = new Map<string, JobPosting>();
+  let skippedJobs = 0;
+  for (const raw of input.savedJobs) {
+    const parsed = jobPostingSchema.safeParse(raw);
+    if (!parsed.success) {
+      skippedJobs += 1;
+      continue;
+    }
+    byId.set(parsed.data.id, parsed.data);
+  }
+  const saved = [...byId.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).map((id) => byId.get(id) as JobPosting);
+
+  /* --- identity groups (each key is built from normalized values only) --- */
+  const byUrl = new Map<string, string[]>();
+  const byExternalId = new Map<string, string[]>();
+  const byCompanyTitle = new Map<string, string[]>();
+  for (const job of saved) {
+    const canonical = job.originalUrl === undefined ? undefined : canonicalJobUrl(job.originalUrl);
+    if (canonical !== undefined) addToGroup(byUrl, canonical, job.id);
+
+    const domain = job.originalUrl === undefined ? undefined : sourceDomain(job.originalUrl);
+    if (domain !== undefined && job.externalId !== undefined) {
+      addToGroup(byExternalId, `${domain}${RELATIONSHIP_SEPARATOR}${job.externalId}`, job.id);
+    }
+
+    const company = usableIdentity(job.company);
+    const title = usableIdentity(job.title);
+    if (company !== undefined && title !== undefined) {
+      addToGroup(byCompanyTitle, `${company}${RELATIONSHIP_SEPARATOR}${title}`, job.id);
+    }
+  }
+
+  /* --- first matching rule wins, per job --- */
+  const byJobId = new Map<string, SavedDuplicateIndication>();
+  for (const job of saved) {
+    const canonical = job.originalUrl === undefined ? undefined : canonicalJobUrl(job.originalUrl);
+    const urlOthers = otherIds(canonical === undefined ? undefined : byUrl.get(canonical), job.id);
+    if (urlOthers.length > 0) {
+      byJobId.set(
+        job.id,
+        indication(urlOthers.length === 1 ? 'confirmed' : 'ambiguous', 'canonical-url', urlOthers),
+      );
+      continue;
+    }
+
+    const domain = job.originalUrl === undefined ? undefined : sourceDomain(job.originalUrl);
+    const externalOthers =
+      domain === undefined || job.externalId === undefined
+        ? []
+        : otherIds(
+            byExternalId.get(`${domain}${RELATIONSHIP_SEPARATOR}${job.externalId}`),
+            job.id,
+          );
+    if (externalOthers.length > 0) {
+      byJobId.set(
+        job.id,
+        indication(
+          externalOthers.length === 1 ? 'confirmed' : 'ambiguous',
+          'external-id',
+          externalOthers,
+        ),
+      );
+      continue;
+    }
+
+    const company = usableIdentity(job.company);
+    const title = usableIdentity(job.title);
+    const possibleOthers =
+      company === undefined || title === undefined
+        ? []
+        : otherIds(byCompanyTitle.get(`${company}${RELATIONSHIP_SEPARATOR}${title}`), job.id);
+    if (possibleOthers.length > 0) {
+      byJobId.set(job.id, indication('possible', 'company-title', possibleOthers));
+      continue;
+    }
+
+    byJobId.set(job.id, indication('none', null, []));
+  }
+
+  return { kind: 'valid', byJobId, inspectedJobs: saved.length, skippedJobs };
+}

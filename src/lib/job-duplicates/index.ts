@@ -9,10 +9,13 @@ export * from './schemas';
 export {
   canonicalJobUrl,
   findDuplicateJob,
+  findSavedJobDuplicates,
   normalizeIdentity,
   sourceDomain,
   DUPLICATE_METHOD_ORDER,
   type DuplicateCheckInput,
+  type SavedDuplicatesInput,
+  type SavedDuplicatesOutcome,
 } from './duplicates';
 export { lookupDuplicateJob, type DuplicateLookupFailureReason, type DuplicateLookupOutcome } from './service';
 export {

@@ -187,6 +187,45 @@ export type DuplicateValidation =
   | { ok: true; result: DuplicateCheckResult }
   | { ok: false; issues: string[] };
 
+/* ------------------------------------------------------------------ */
+/* Saved job <-> saved job relationship (Prompt 30)                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Relationship between one SAVED job and the OTHER saved jobs, derived from the
+ * same three documented rules `findDuplicateJob()` uses (canonical URL →
+ * external identifier scoped to its source domain → normalized company +
+ * title). It is a READ-ONLY indication: nothing is merged, rewritten or
+ * deleted, and a saved record is never removed because it looks equivalent.
+ *
+ * - `none` — no rule matched another saved record.
+ * - `confirmed` — an exact trustworthy identity (canonical URL or source
+ *   identifier within the same domain) is shared with exactly one other record.
+ * - `ambiguous` — several saved records share that trustworthy identity; no
+ *   winner is chosen.
+ * - `possible` — only the weak company+title rule matched; the user must verify.
+ */
+export const SAVED_DUPLICATE_STATUSES = ['none', 'confirmed', 'possible', 'ambiguous'] as const;
+export type SavedDuplicateStatus = (typeof SAVED_DUPLICATE_STATUSES)[number];
+
+/**
+ * The saved-vs-saved indication carried by a priority entry / dashboard row.
+ * `equivalentJobIds` lists the OTHER saved job ids only (sorted ascending,
+ * bounded) — never titles, companies or text, so a result can never echo saved
+ * page content.
+ */
+export const savedDuplicateIndicationSchema = z
+  .object({
+    status: z.enum(SAVED_DUPLICATE_STATUSES),
+    /** The rule that produced the indication, or null for `none`. */
+    method: z.enum(DUPLICATE_METHODS).nullable(),
+    equivalentJobIds: z
+      .array(z.string().min(1).max(MAX_IDENTITY_CHARS))
+      .max(MAX_DUPLICATE_MATCHES),
+  })
+  .strict();
+export type SavedDuplicateIndication = z.infer<typeof savedDuplicateIndicationSchema>;
+
 /** Validate an untrusted object against the strict result schema. */
 export function validateDuplicateCheck(payload: unknown): DuplicateValidation {
   const parsed = duplicateCheckSchema.safeParse(payload);

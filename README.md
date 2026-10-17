@@ -470,6 +470,21 @@ read (one malformed record is enough) or settings cannot be read, the affected
 signal becomes explicitly *unknown* and the job falls back to `needs-review` with
 a concise explanation; missing data is never treated as a good match.
 
+### Duplicate indication (saved vs saved)
+
+The same three duplicate rules (canonical URL → source identifier inside its own
+domain → normalized company + title) are reused **read-only** to compare the
+saved list with itself (`findSavedJobDuplicates()`). Each prioritized entry
+carries a `duplicate` block: `none`, `confirmed` (exactly one other saved record
+shares a trustworthy identity), `ambiguous` (several do — no winner chosen) or
+`possible` (company+title only). It adds one short reason and a label such as
+*Same posting as 1 other saved job*, and `result.notes` explains that nothing was
+merged.
+
+This is an indication, not an action: the job keeps its category, its own record
+and its place in the order, duplicates are never demoted, merged, hidden or
+deleted, and the equivalent job ids are the only saved data the block carries.
+
 Options → Jobs renders this as a compact **Priority shortlist**: the four
 categories with counts, a selectable list per category (title/company, match
 estimate or an insufficient-data label, posting date or "Posting date unknown",
@@ -482,6 +497,49 @@ discovery, no listing-availability or applicant-count data, no ATS outcome
 claims, no navigation or automatic application submission, and no prioritization
 is written back to storage. Verification here is unit/`react-dom/server` level
 (no real job site was accessed).
+
+## Dashboard (local overview)
+
+Options now has a **Dashboard** tab (`entrypoints/options/DashboardPanel.tsx` +
+the pure `src/lib/dashboard/`) that shows one read-only overview of what this
+browser already stores. It is **not** a hosted website, a separate app or a live
+job feed: it performs no search, no fetch, no AI call, no polling and no write,
+and it never applies to a job.
+
+One validated read per source on mount (saved postings, application log, profile,
+settings) — repeated only when you press **Refresh dashboard**. Match estimates
+are computed once per load with the existing `calculateJobMatch`, then the pure
+`buildDashboardSnapshot()` reuses `prioritizeJobs()` for counts and order. Nothing
+derived is persisted.
+
+Metrics (each is a real integer or explicitly **Unavailable** — never a fake 0):
+
+| Metric | Definition |
+|---|---|
+| Saved jobs | Saved postings that passed validation. |
+| Needs review | Prioritization category `needs-review`. |
+| Apply first | Prioritization category `apply-first`. |
+| Good match | Prioritization category `good-match`. |
+| Applications submitted | Application records with a status other than `planned`. |
+| Interviews / Offers | Records whose **current** status is `interview` / `offer`. |
+| Upcoming follow-ups | Records with a follow-up date today or later, excluding `rejected`/`withdrawn`. |
+
+The shortlist shows the first **12** actionable jobs of the same deterministic
+order (apply first → good match → needs review) with title, company, location
+when saved, match estimate and confidence when assessable, category, posting
+date, the reasons, application status and any duplicate indication. Already-applied
+jobs are counted separately and stay out of this list — they are still saved and
+reachable in Jobs. Actions are real navigation only: *View job details* opens that
+job in the existing Jobs tab (match summary + resume sections), *Open original
+posting* is a safe http(s) link when one was saved, and the section buttons open
+Jobs / Applications / Job search / Settings.
+
+Honest states: no saved jobs, saved jobs with no usable match data, missing
+posting dates ("Posting date unknown"), no application history, malformed or
+unavailable storage (error + *Unavailable* metrics, nothing overwritten) and
+partial availability (a readable application log is still counted while job
+derived metrics are not). Verified with jsdom/unit tests only — no loaded-extension
+browser session.
 
 ## Duplicate job detection (local, no AI)
 
@@ -521,6 +579,11 @@ separate record* (that override is per-attempt — it never becomes a setting, a
 it does not skip record validation or the guard against malformed stored data).
 Nothing is overwritten, merged or deleted, and the check is read-only (the saved
 list is never modified, not even when it is malformed).
+
+The same rules are also reused **read-only** for saved-vs-saved comparison
+(`findSavedJobDuplicates()`, Prompt 30): the priority shortlist and the dashboard
+mark equivalent saved records (`Same posting as …`, possible or ambiguous)
+without merging, hiding or deleting anything.
 
 The check runs **immediately before the write** and always re-reads the
 persisted saved-jobs list — never a possibly stale in-memory copy — so a posting
@@ -844,7 +907,18 @@ request/response schemas, normalization, a typed provider contract and a
 secure-proxy transport; **shipped unconfigured, with no live search, no backend
 and no credential in the extension**), and the **Options → Job search UI**
 (Prompt 28 — full search form, all result and error states, and an honest
-"live search is unavailable" state; zero network requests while unconfigured).
-**Not yet built: any live job search (needs a deployed secure search proxy),
-provider-result import at runtime (needs live results), a Workday adapter, live
-wiring of the AI provider endpoint, and the deeper application-form automation.**
+"live search is unavailable" state; zero network requests while unconfigured),
+the **job import + duplicate-safe saving workflow** (Prompt 29 — paste a listing,
+review exactly what will be stored, duplicate-checked save), and the **local job
+prioritization + Dashboard** (Prompt 30 — saved-vs-saved duplicate indications
+and the read-only Options → Dashboard overview described above).
+
+**Roadmap constraints (standing):** no backend hosting, no paid services and no
+exposed API credentials. Adzuna live search stays deferred until a secure,
+permitted, no-hosting solution exists, and a credential-holding proxy is not
+planned or deployed without explicit user approval — the Prompt 27 foundation
+remains in place, unconfigured.
+
+**Not yet built:** any live job search, provider-result import at runtime, a
+Workday adapter, live wiring of the AI provider endpoint, and the deeper
+application-form automation.

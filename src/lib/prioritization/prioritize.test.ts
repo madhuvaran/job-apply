@@ -207,6 +207,9 @@ describe('result contract', () => {
         'application',
         'category',
         'company',
+        // Prompt 30: the saved-vs-saved duplicate indication. Still no combined
+        // numerical score — it carries a status, a method and job ids only.
+        'duplicate',
         'freshness',
         'jobId',
         'match',

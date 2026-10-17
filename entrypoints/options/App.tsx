@@ -35,6 +35,7 @@ import SettingsPanel from './SettingsPanel';
 import JobSearchPanel from './JobSearchPanel';
 import JobsPanel from './JobsPanel';
 import ApplicationsPanel from './ApplicationsPanel';
+import DashboardPanel, { type DashboardNavTarget } from './DashboardPanel';
 import { Row, Section } from './ui';
 import './style.css';
 
@@ -44,10 +45,16 @@ type SaveState =
   | { kind: 'saved'; at: string }
   | { kind: 'error'; message: string };
 
-type Tab = 'profile' | 'settings' | 'search' | 'jobs' | 'applications';
+type Tab = 'dashboard' | 'profile' | 'settings' | 'search' | 'jobs' | 'applications';
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('profile');
+  /**
+   * Dashboard → Jobs navigation (Prompt 30): the saved job whose details the
+   * Jobs tab should open. One-shot by design — pressing the Jobs tab directly
+   * clears it again, so a later visit never jumps to an old selection.
+   */
+  const [jobsFocusId, setJobsFocusId] = useState<string | null>(null);
   const [load, setLoad] = useState<EditorLoadState>({ kind: 'empty' });
   const [draft, setDraftState] = useState<ProfileDraft>(emptyDraft());
   const [savedSnapshot, setSavedSnapshot] = useState<ProfileDraft>(emptyDraft());
@@ -56,6 +63,12 @@ export default function App() {
   const [migrationBanner, setMigrationBanner] = useState<string | null>(null);
   const dirty = useMemo(() => draftsDiffer(draft, savedSnapshot), [draft, savedSnapshot]);
   const errors = useMemo(() => validateDraft(draft), [draft]);
+
+  /** Dashboard navigation: switch tab, optionally focusing a saved job. */
+  const onDashboardNavigate = useCallback((target: DashboardNavTarget, jobId?: string) => {
+    setJobsFocusId(jobId ?? null);
+    setTab(target);
+  }, []);
 
   /* ---------------- load on mount ---------------- */
   useEffect(() => {
@@ -146,17 +159,27 @@ export default function App() {
     <div className="options-page">
       <header className="options-header">
         <h1>
-          {tab === 'profile'
-            ? 'Master profile'
-            : tab === 'settings'
-              ? 'Settings & privacy'
-              : tab === 'search'
-                ? 'Job search'
-                : tab === 'jobs'
-                  ? 'Jobs'
-                  : 'Applications'}
+          {tab === 'dashboard'
+            ? 'Dashboard'
+            : tab === 'profile'
+              ? 'Master profile'
+              : tab === 'settings'
+                ? 'Settings & privacy'
+                : tab === 'search'
+                  ? 'Job search'
+                  : tab === 'jobs'
+                    ? 'Jobs'
+                    : 'Applications'}
         </h1>
         <nav className="tabs" aria-label="Options sections">
+          <button
+            type="button"
+            className={tab === 'dashboard' ? 'tab active' : 'tab'}
+            aria-current={tab === 'dashboard' ? 'page' : undefined}
+            onClick={() => setTab('dashboard')}
+          >
+            Dashboard
+          </button>
           <button
             type="button"
             className={tab === 'profile' ? 'tab active' : 'tab'}
@@ -185,7 +208,10 @@ export default function App() {
             type="button"
             className={tab === 'jobs' ? 'tab active' : 'tab'}
             aria-current={tab === 'jobs' ? 'page' : undefined}
-            onClick={() => setTab('jobs')}
+            onClick={() => {
+              setJobsFocusId(null);
+              setTab('jobs');
+            }}
           >
             Jobs
           </button>
@@ -201,10 +227,12 @@ export default function App() {
         {tab === 'profile' && <SaveStatus state={saveState} dirty={dirty} />}
       </header>
 
-      {tab === 'search' ? (
+      {tab === 'dashboard' ? (
+        <DashboardPanel onNavigate={onDashboardNavigate} />
+      ) : tab === 'search' ? (
         <JobSearchPanel />
       ) : tab === 'jobs' ? (
-        <JobsPanel />
+        <JobsPanel focusJobId={jobsFocusId} />
       ) : tab === 'applications' ? (
         <ApplicationsPanel />
       ) : tab === 'settings' ? (

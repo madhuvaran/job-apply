@@ -27,6 +27,8 @@ import {
   type Application,
   type ApplicationStatus,
 } from '../applications/schemas';
+import { findSavedJobDuplicates } from '../job-duplicates/duplicates';
+import type { SavedDuplicateIndication } from '../job-duplicates/schemas';
 import { calendarDaysBetween, postingDateSchema } from '../job-dates';
 import { jobPostingSchema, postingUrlSchema, type JobPosting } from '../job-posting';
 import { validateMatchResult, type JobMatchResult } from '../matching/schemas';
@@ -38,6 +40,7 @@ import {
   PRIORITY_SCHEMA_VERSION,
   type PriorityApplicationInfo,
   type PriorityCategory,
+  type PriorityDuplicateInfo,
   type PriorityEntry,
   type PriorityFreshness,
   type PriorityGroup,
@@ -95,6 +98,8 @@ const NOTE_DUPLICATE_MATCH_INPUT =
   'More than one match result was supplied for the same saved job, so those jobs show no score.';
 const NOTE_THRESHOLD_OFF =
   'No match minimum is configured (minimum 0 disables threshold filtering), so any usable estimate counts as meeting it.';
+const NOTE_DUPLICATE_SAVED_JOBS =
+  'Some saved jobs look like the same posting. They are kept as separate records and only marked as possible or confirmed duplicates — nothing was merged, hidden or deleted.';
 
 const REASON_NO_APPLICATION = 'No application is recorded for this saved job.';
 const REASON_APPLICATION_UNAVAILABLE =
@@ -310,6 +315,52 @@ function buildApplicationInfo(
 }
 
 /* ------------------------------------------------------------------ */
+/* Duplicate indication (reuses the detector's saved-vs-saved rules)   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Saved-vs-saved duplicate information for ONE job. The statuses, method and
+ * ids come straight from `findSavedJobDuplicates()` (the same documented rules
+ * the save flow uses); only a fixed label is added here.
+ *
+ * A duplicate is an INDICATION: the entry keeps its category, its own record
+ * and its place in the order — nothing is merged, hidden or deleted.
+ */
+function buildDuplicateInfo(
+  indication: SavedDuplicateIndication | undefined,
+): PriorityDuplicateInfo {
+  if (indication === undefined || indication.status === 'none') {
+    return {
+      status: 'none',
+      method: null,
+      equivalentJobIds: [],
+      label: 'No duplicate saved posting detected',
+    };
+  }
+  const n = indication.equivalentJobIds.length;
+  const others = `${n} other saved job${n === 1 ? '' : 's'}`;
+  const label =
+    indication.status === 'confirmed'
+      ? `Same posting as ${others}`
+      : indication.status === 'possible'
+        ? `Same company and title as ${others} — verify`
+        : `${n} saved jobs share this posting's URL or identifier — verify`;
+  return { ...indication, label };
+}
+
+/** One extra reason when an equivalent saved record exists, else null. */
+function duplicateReason(duplicate: PriorityDuplicateInfo): string | null {
+  if (duplicate.status === 'none') return null;
+  if (duplicate.status === 'confirmed') {
+    return 'Another saved job is the same posting (same listing URL or source identifier) — review both before treating them as separate opportunities.';
+  }
+  if (duplicate.status === 'ambiguous') {
+    return "Several saved jobs share this posting's URL or source identifier — this may be the same vacancy saved more than once.";
+  }
+  return 'Another saved job has the same company and title, which may be the same vacancy — confirm before applying to both.';
+}
+
+/* ------------------------------------------------------------------ */
 /* Reasons (human-readable, privacy-safe, derived from our own values) */
 /* ------------------------------------------------------------------ */
 
@@ -486,6 +537,17 @@ export function prioritizeJobs(input: PrioritizationInput): PrioritizationOutcom
   }
   if (skippedJobs > 0) notes.push(NOTE_SKIPPED_JOBS);
 
+  /* --- saved-vs-saved duplicates (read-only indication, never a merge) --- */
+  const duplicates = findSavedJobDuplicates({ savedJobs: jobs });
+  const duplicateByJobId =
+    duplicates.kind === 'valid'
+      ? duplicates.byJobId
+      : (new Map<string, SavedDuplicateIndication>());
+  if (duplicates.kind === 'invalid') {
+    notes.push('Duplicate information could not be computed for these saved jobs.');
+  }
+  let hasDuplicateIndication = false;
+
   /* --- already-computed match results (validated, never recomputed) --- */
   // At most ONE usable entry per job id: a second entry makes that job's match
   // signal unusable (fail closed) instead of silently letting whichever entry
@@ -559,6 +621,9 @@ export function prioritizeJobs(input: PrioritizationInput): PrioritizationOutcom
     const freshness = buildFreshness(job.postedDate, today);
     const application = buildApplicationInfo(job.id, applications);
     const { category, reasons } = classify(match, freshness, application);
+    const duplicate = buildDuplicateInfo(duplicateByJobId.get(job.id));
+    const duplicateText = duplicateReason(duplicate);
+    if (duplicateText !== null) hasDuplicateIndication = true;
     const url = job.originalUrl !== undefined ? postingUrlSchema.safeParse(job.originalUrl) : null;
     return {
       jobId: job.id,
@@ -569,9 +634,13 @@ export function prioritizeJobs(input: PrioritizationInput): PrioritizationOutcom
       match,
       freshness,
       application,
-      reasons,
+      duplicate,
+      // Reasons stay bounded (max 6): the duplicate note is appended last and
+      // never displaces the classification's own explanation.
+      reasons: duplicateText === null ? reasons : [...reasons, duplicateText].slice(0, 6),
     };
   });
+  if (hasDuplicateIndication) notes.push(NOTE_DUPLICATE_SAVED_JOBS);
 
   const groups: PriorityGroup[] = PRIORITY_CATEGORIES.map((category) => {
     const groupJobs = entries.filter((e) => e.category === category).sort(comparePriorityEntries);

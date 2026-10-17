@@ -1,5 +1,216 @@
 # PROGRESS
 
+## Roadmap constraints (standing — apply to every prompt)
+
+These are project requirements, not suggestions. They were re-confirmed by
+Prompt 30 after earlier prompts proposed deploying a search proxy.
+
+- **No backend hosting and no deployment.** The extension is the product; there
+  is no server component to run, deploy or operate.
+- **No paid services.** No metered API, subscription or paid plan is required by
+  any shipped feature.
+- **No exposed API credentials.** No `app_id`/`app_key`, provider key or token
+  ever ships in the extension, its storage, its assets or this repository.
+- **No credential-holding proxy without explicit user approval.** A server-side
+  proxy that would hold provider credentials is NOT planned, NOT scaffolded and
+  NOT deployed. It may only be considered if the user explicitly asks for it
+  (which also re-opens the hosting and paid-service questions above).
+- **Adzuna live search remains deferred** until a secure, permitted, no-hosting
+  solution exists. The Prompt 27 foundation (strict schemas, normalization, typed
+  provider contract, secure-proxy transport) is KEPT exactly as shipped and stays
+  unconfigured; the Prompt 28 UI keeps saying live search is unavailable, and
+  Prompt 29's explicit import path is the real discovery workflow today.
+- **Development continues on local features**: explicit job import,
+  deterministic prioritization, the dashboard, and the existing resume and
+  application workflows. No new AI-provider calls and no new permissions.
+
+## Done (2026-10-17, task 36 / Prompt 30: local job prioritization + dashboard foundation)
+The first working **Dashboard** for the extension, built entirely on data this
+browser already stores. **No backend, no deployment, no paid service, no live
+Adzuna request, no credential, no new dependency, no manifest/permission change,
+no AI-provider call, no network request, no automatic application and no
+fabricated statistic.** Prioritization was extended in place rather than
+duplicated (see *Architecture decision*).
+
+### Files
+- **`src/lib/job-duplicates/schemas.ts`** — new strict `savedDuplicateIndicationSchema`
+  (`status` / `method` / `equivalentJobIds`, all bounded; saved job ids only).
+- **`src/lib/job-duplicates/duplicates.ts`** — new pure `findSavedJobDuplicates()`:
+  the detector's OWN three rules, applied saved-vs-saved (see *Duplicate
+  indication*). Inputs are never mutated, malformed records are skipped, and
+  output is independent of input order.
+- **`src/lib/job-duplicates/index.ts`** — exports the new function and types.
+- **`src/lib/prioritization/schemas.ts`** — `PRIORITY_SCHEMA_VERSION` is now
+  **`'2'`** because every entry carries a required `duplicate` block. Nothing is
+  persisted, so there is no migration (a result lives in memory for one render).
+- **`src/lib/prioritization/prioritize.ts`** — computes the duplicate indication
+  from the validated saved jobs, adds it to each entry, appends ONE duplicate
+  reason (reasons stay <= 6) and one fail-safe note; **classification and ordering
+  are unchanged**.
+- **`src/lib/dashboard/schemas.ts`** (new) — strict snapshot contract: 8 metrics
+  that are either an integer `value` or `unavailable` + fixed reason, a bounded
+  shortlist block, documented metric labels/definitions, and `today`/dates/URLs
+  reusing the existing domain schemas.
+- **`src/lib/dashboard/snapshot.ts`** (new) — pure `buildDashboardSnapshot()`:
+  validates the postings and the application log with the existing schemas, calls
+  `prioritizeJobs()`, and projects metrics + shortlist rows. It imports no
+  storage, no matcher, no clock, no browser API.
+- **`src/lib/dashboard/index.ts`** (new) — public surface.
+- **`entrypoints/options/DashboardPanel.tsx`** (new) — the Dashboard tab: one read
+  per source on mount, explicit Refresh, metric grid, prioritized shortlist with
+  real navigation, empty/partial/malformed states.
+- **`entrypoints/options/App.tsx`** — new first `Dashboard` tab (the default tab
+  is still Profile, so no existing workflow changes), `onNavigate` wiring and a
+  one-shot `focusJobId` for Dashboard -> Jobs.
+- **`entrypoints/options/JobsPanel.tsx`** — optional `focusJobId` prop that
+  preselects an existing saved job (match summary + resume sections); nothing is
+  created, filled or submitted.
+- **`entrypoints/options/PriorityList.tsx`** — renders the duplicate indication as
+  a fourth, clearly separate signal.
+- **`entrypoints/options/style.css`** — duplicate-signal + dashboard block
+  (responsive metric grid, unavailable metrics dashed/grey, shortlist, actions).
+- Tests: `src/lib/job-duplicates/saved-duplicates.test.ts` (15),
+  `src/lib/prioritization/prompt-30-prioritization.test.ts` (20),
+  `src/lib/dashboard/snapshot.test.ts` (15),
+  `src/lib/dashboard/dashboard-ui.test.ts` (8, jsdom),
+  `src/lib/dashboard/dashboard-tab.test.ts` (4, jsdom). Two existing assertions
+  were updated for the intended contract change (the entry key list and the tab
+  label list).
+- Docs: `PROGRESS.md` (this section + the corrected roadmap), `README.md`,
+  `docs/adzuna-integration.md` (next step now requires explicit approval).
+
+### Architecture decision (reuse, no second source of truth)
+Prompt 30 suggested `src/lib/job-prioritization/`. The repository already had
+`src/lib/prioritization/` from Prompts 24/25 with the four categories, the
+freshness window, the threshold consistency checks and deterministic ordering,
+so a second module would have duplicated the rules and drifted. The dashboard
+was added as a **projection** (`src/lib/dashboard/`) that CALLS that module; the
+only prioritization change is the additive `duplicate` block. Match estimation
+weights and semantics were not touched at all.
+
+### Prioritization rules and thresholds (current, documented)
+Categories, first match wins (unchanged from Prompt 24):
+1. `already-applied` — a reliably linked application (`jobId` equality only)
+   with `applied`/`assessment`/`interview`/`offer`/`rejected`/`withdrawn`.
+2. `needs-review` — unreadable application log; unusable match (invalid,
+   duplicate match input, threshold mismatch, insufficient data, unavailable,
+   below minimum); or a **future** posting date.
+3. `apply-first` — score meets the configured minimum, posting date known,
+   non-future and <= **7 calendar days** old.
+4. `good-match` — score meets the minimum but the posting date is unknown or
+   older than 7 days.
+
+Freshness: 7 calendar days, computed from calendar parts (never elapsed ms).
+Missing date = unknown (never recent). Future date = `Future posting date —
+verify`, never fresh. Invalid/impossible dates are rejected by the posting schema
+and the whole record is skipped (`skippedJobs` + a note) — never coerced to the
+capture date. The local `capturedAt` is NEVER used as a posting date.
+
+Application semantics: `planned` is not a submission (the job can still be
+`apply-first`; the label says *not submitted*). Interviews/offers count a record's
+CURRENT status, not a history. Applications are linked by `jobId` only.
+Ordering within a category: known date newest-first -> score high-first -> jobId
+ascending. Identical inputs produce identical output; nothing is randomized.
+
+### Duplicate indication (new, read-only)
+`findSavedJobDuplicates({ savedJobs })` compares saved records with each other
+using the detector's own precedence:
+1. canonical URL (fragment removed, www/port normalized, path + query preserved);
+2. explicit `externalId` **only** inside the same source domain;
+3. normalized company + title (trim/lowercase/collapse whitespace, >= 2 chars) —
+   always `possible`.
+
+One other record -> `confirmed`; several -> `ambiguous` (no winner); weak rule ->
+`possible`. The indication never changes a category, never demotes a job, never
+merges/hides/deletes a record and carries job ids only. `result.notes` states that
+nothing was merged, and the dashboard/priority list show the label inline.
+
+### Dashboard metrics and definitions
+| Metric | Definition |
+|---|---|
+| Saved jobs | Validated saved postings (invalid records skipped + noted). |
+| Needs review / Apply first / Good match | The prioritization category counts. |
+| Applications submitted | Application records whose status is not `planned`. |
+| Interviews / Offers | Records whose current status is `interview` / `offer`. |
+| Upcoming follow-ups | `followUpDate >= today` and status not `rejected`/`withdrawn`. |
+
+Unavailable is a first-class state with a fixed explanation — a failed jobs read
+never renders `0`. Partial availability is supported: a readable application log
+is still counted while job-derived metrics are unavailable (and vice versa).
+The shortlist is capped at **12** actionable rows with an explicit "showing the
+first 12 of N" line; already-applied jobs are counted separately and kept out of
+the actionable list (still saved, still reachable in Jobs).
+
+### Data loading and performance
+- One `Promise.all` read per source on mount (jobs, applications, profile,
+  settings) — four reads, all through the validated storage service; Refresh is
+  the only re-read (asserted in tests). No storage listener, no timer, no polling.
+- Match estimates are computed ONCE per load with the existing
+  `calculateJobMatch` (not per row, not per render) and passed into the pure
+  snapshot builder.
+- Nothing derived is persisted — no priority score, no dashboard snapshot.
+
+### Tests (+62 -> 1225 total; 68 files)
+- **saved-duplicates.test.ts (15)** — URL confirmations (including `www`/fragment),
+  query-path significance, ambiguity, domain-scoped identifiers, unscoped ids,
+  company+title possible/negative cases, precedence, malformed records, empty
+  list, order independence, repeated ids, typed invalid input, agreement with the
+  save-flow detector, no network/clock/storage imports.
+- **prompt-30-prioritization.test.ts (20)** — strong+recent, strong+unknown date,
+  insufficient data, below minimum, future/tomorrow, impossible date skipped,
+  posting-vs-capture date, missing optional fields, already-applied, planned not
+  submitted, jobId-only linking, unreadable log fails closed, duplicate
+  confirmed/possible/ambiguous/none, ordering, input-order independence,
+  identical input -> identical output, no fetch.
+- **snapshot.test.ts (15)** — counts from real records, submission/interview/
+  offer/follow-up semantics, shortlist projection/order/cap, duplicate propagation,
+  empty store zeros, no-match-data rows, unavailable-not-zero for jobs and
+  applications, one invalid application record fails closed, invalid saved record
+  skipped, typed invalid date, determinism, no fetch/clock/storage imports.
+- **dashboard-ui.test.ts (8, jsdom)** — rendered counts from storage, planned vs
+  submitted labels, no writes/fetches, exactly four reads + Refresh (no polling),
+  empty state with a real action, all-applied state, malformed jobs (unavailable
+  metrics, no overwrite), malformed log (only application metrics unavailable),
+  navigation targets.
+- **dashboard-tab.test.ts (4, jsdom)** — the tab is current and shows the overview,
+  *View job details* opens the existing Jobs tab with that job selected, the focus
+  is not carried into a later manual Jobs visit, no network.
+- Existing matching, application-log, duplicate-detection and resume suites were
+  not modified and still pass (Prompt 30 §8.18).
+
+### Commands run this task (exit statuses captured inline)
+- `npx vitest run` -> **exit 0, 1225/1225 passed** (68 files; 1163 before + 62 new)
+- `npm run compile` (tsc --noEmit) -> **exit 0**
+- `npm run build` (wxt build, chrome-mv3) -> **exit 0**; manifest unchanged
+  (`storage`, `activeTab`, `scripting`; no host permissions, no new permissions)
+- Bundle scan of `.output/chrome-mv3` -> no credential names (`app_id`,
+  `app_key`, `apiKey`, provider keys) and no `api.adzuna.com` call target
+- `.output/` and `.wxt/` remain ignored; working tree clean after committing
+
+### Limitations / known issues
+- The dashboard knows nothing about listing availability, applicant counts or
+  hiring outcomes, and shows no such claim.
+- Interviews/offers reflect CURRENT statuses — there is no status history, so it
+  is a snapshot rather than a funnel.
+- Follow-ups only come from application records; there are no reminders,
+  notifications or background checks (no permission was added).
+- Duplicates are indicated, never merged: the user decides; there is no bulk
+  dedupe action.
+- The dashboard updates on mount and on Refresh only (no storage-change listener).
+- Verification is jsdom/unit level — no loaded-extension browser session was run.
+- Live search is still unavailable and no proxy exists (see the standing
+  constraints above).
+
+### Next
+- **Prompt 31 (recommended, local-only):** surface the follow-ups and stale
+  applications the data ALREADY holds — a local "needs attention" section on the
+  dashboard (due/overdue follow-up dates, applications untouched for N days,
+  saved jobs older than the freshness window) with deterministic ordering and
+  one-click navigation to the existing Applications/Jobs tabs. No notifications,
+  no new permissions, no hosting, no AI, and nothing written to storage.
+
+---
+
 ## Done (2026-10-15, task 35 / Prompt 29: job import, normalization & duplicate-safe saving)
 A real, user-driven path for getting actual jobs into the app while live Adzuna
 search stays unavailable: paste a listing → **review exactly what will be
@@ -129,10 +340,11 @@ state at the final boundary, and the matching rules were not touched.
   limitation as the repo's existing UI tests).
 
 ### Next
-- Prompt 30 (not started — this task stops here): deploy the server-side search
-  proxy holding `app_id`/`app_key`, wire its endpoint, verify the live states
-  end to end (including the real overage status), then connect live results to
-  `candidateFromNormalizedJob()` so a search result can be imported as a snippet.
+- **Superseded by the standing roadmap constraints and by Prompt 30.** The step
+  suggested here (deploy a credential-holding search proxy) is NOT planned and
+  would require explicit user approval; no proxy was scaffolded, configured or
+  deployed in any task. Prompt 30 instead built the local prioritization
+  foundation and the Options -> Dashboard overview on stored data.
 
 ---
 ## Done (2026-10-15, task 34 / Prompt 28: Job search UI foundation)
@@ -294,10 +506,10 @@ application (asserted by a source scan of both new files for
   cannot stand in for the extension (other tabs use `chrome.storage`).
 
 ### Next
-- Prompt 29 (not started — this task stops here): deploy the server-side search
-  proxy that holds `app_id`/`app_key`, configure its endpoint, verify the live
-  states (including the real overage status) end to end, and then add
-  save-from-search with an honest handling of the truncated snippet.
+- **Superseded by the standing roadmap constraints.** Deploying a
+  credential-holding search proxy requires explicit user approval and is not on
+  the roadmap; Prompt 29 instead delivered the explicit local import path and
+  Prompt 30 the local prioritization/dashboard foundation.
 
 ---
 ## Done (2026-10-15, task 33 / Prompt 27: Adzuna job-search feasibility + integration foundation)
@@ -415,10 +627,11 @@ working one. No request is made on startup and no background polling was added.
   account-level questions to confirm with a configured developer account.
 
 ### Next
-- Prompt 28 (not started — this task stops here): deploy the server-side search
-  proxy that holds `app_id`/`app_key`, attach it in settings, confirm the real
-  overage status and India result quality against a configured account, then build
-  the search UI on the normalized page this foundation already produces.
+- **Superseded by the standing roadmap constraints.** No proxy is deployed (or
+  planned) without explicit user approval; Prompt 28 built the search UI on the
+  normalized page this foundation already produces, with live search reported as
+  unavailable, and Prompts 29/30 added the local import, prioritization and
+  dashboard workflows.
 
 ---
 ## Done (2026-10-14, task 32 / Prompt 26.1: recheck duplicates immediately before save)

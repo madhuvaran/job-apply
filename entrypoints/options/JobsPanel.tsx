@@ -133,7 +133,17 @@ function parseOptionalNumber(raw: string): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
-export default function JobsPanel() {
+export interface JobsPanelProps {
+  /**
+   * Saved job to open on mount (Prompt 30: Dashboard → "View job details").
+   * It only preselects the existing match-summary/resume sections for that job —
+   * nothing is created, submitted or filled, and the selection can be cleared
+   * exactly like a manual one.
+   */
+  focusJobId?: string | null;
+}
+
+export default function JobsPanel({ focusJobId = null }: JobsPanelProps) {
   const [postings, setPostings] = useState<JobPosting[]>([]);
   const [loadState, setLoadState] = useState<LoadState>('loading');
   const [loadMessage, setLoadMessage] = useState('');
@@ -150,8 +160,9 @@ export default function JobsPanel() {
   const [dupCheck, setDupCheck] = useState<DuplicateCheckResult | null>(null);
   /** Fixed message when the pre-write check could not run (nothing was written). */
   const [dupNotice, setDupNotice] = useState<string | null>(null);
-  // Match summary (Prompt 10): selection + the AI-safe inputs it needs.
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Match summary (Prompt 10): selection + the AI-safe inputs it needs. A
+  // dashboard navigation may preselect one saved job (Prompt 30).
+  const [selectedId, setSelectedId] = useState<string | null>(focusJobId);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [profileState, setProfileState] = useState<'loading' | 'ready'>('loading');
   const [settings, setSettings] = useState<Settings | null>(null);

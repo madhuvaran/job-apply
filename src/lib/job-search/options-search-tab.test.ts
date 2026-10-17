@@ -79,6 +79,9 @@ describe('Options → Job search tab', () => {
     await mount(createElement(App));
     const labels = Array.from(container.querySelectorAll('nav.tabs button')).map((b) => b.textContent);
     expect(labels).toEqual([
+      // Dashboard was added ahead of the existing sections (Prompt 30); no
+      // existing tab was removed or reordered.
+      'Dashboard',
       'Profile',
       'Settings & privacy',
       'Job search',

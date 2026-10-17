@@ -255,8 +255,15 @@ or paid service was created.**
   test-only fixtures**, so it is ready but never exercised against the live API.
   Imported jobs are never displayed as Adzuna search results.
 
-**Exact next step:** deploy the **server-side search proxy** that holds
-`app_id`/`app_key`, attach that endpoint, and confirm the real overage status code
-and India result quality against a configured developer account — then feed live
-results into the existing import mapping and verify attribution/linking behaviour
-end to end.
+**Roadmap correction (Prompt 30):** the project requires **no backend hosting,
+no paid services and no exposed API credentials**, and a **credential-holding
+proxy is not planned or deployed without explicit user approval**. The section
+below therefore describes the integration boundary as it stands, not a pending
+task: nothing here should be read as a next step until the user explicitly asks
+for a proxy and accepts the hosting implications.
+
+**If (and only if) the user explicitly approves a proxy:** the exact next step
+would be to deploy the server-side search proxy that holds `app_id`/`app_key`,
+attach that endpoint, and confirm the real overage status code and India result
+quality against a configured developer account — then feed live results into the
+existing import mapping and verify attribution/linking behaviour end to end.

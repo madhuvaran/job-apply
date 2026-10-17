@@ -12,6 +12,10 @@
  *   (`target="_blank" rel="noreferrer noopener"`) and is only rendered when the
  *   saved URL re-validated as http(s). Nothing is submitted, filled or opened
  *   automatically.
+ * - Duplicate indication (Prompt 30): when another saved job is the same
+ *   posting (or may be), a separate signal is shown. Nothing is merged,
+ *   hidden or deleted and the job keeps its category and its place in the
+ *   order — the user decides what to do.
  */
 import type {
   PrioritizationResult,
@@ -97,6 +101,15 @@ export default function PriorityList({ result, selected, onSelect, extraNotes = 
                         <span className="priority-signal" data-field="application">
                           {entry.application.label}
                         </span>
+                        {entry.duplicate.status !== 'none' && (
+                          <span
+                            className="priority-signal"
+                            data-field="duplicate"
+                            data-status={entry.duplicate.status}
+                          >
+                            {entry.duplicate.label}
+                          </span>
+                        )}
                       </div>
                       <ul className="priority-reasons" data-field="reasons">
                         {entry.reasons.map((reason) => (

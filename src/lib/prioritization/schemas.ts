@@ -20,8 +20,20 @@ import { z } from 'zod';
 import { APPLICATION_STATUSES, applicationDateSchema } from '../applications/schemas';
 import { postingDateSchema } from '../job-dates';
 import { postingUrlSchema } from '../job-posting';
+import {
+  DUPLICATE_METHODS,
+  MAX_DUPLICATE_MATCHES,
+  MAX_IDENTITY_CHARS,
+  SAVED_DUPLICATE_STATUSES,
+} from '../job-duplicates/schemas';
 
-export const PRIORITY_SCHEMA_VERSION = '1';
+/**
+ * Result contract version. Bumped to `2` by Prompt 30: every entry now carries
+ * a required `duplicate` block (the saved-vs-saved indication). Nothing is
+ * persisted, so no migration exists or is needed — a result is only ever
+ * produced and consumed in memory by this module's current code.
+ */
+export const PRIORITY_SCHEMA_VERSION = '2';
 
 /** Documented, conservative freshness window (calendar days). */
 export const FRESHNESS_WINDOW_DAYS = 7;
@@ -140,6 +152,28 @@ export const priorityApplicationSchema = z
   .strict();
 export type PriorityApplicationInfo = z.infer<typeof priorityApplicationSchema>;
 
+/**
+ * Duplicate information for one saved job (Prompt 30). It reuses the
+ * duplicate detector's OWN saved-vs-saved indication (same three documented
+ * rules, same status vocabulary) and adds a fixed, human-readable label.
+ *
+ * This is an INDICATION only: the job remains its own record, keeps its
+ * category and is never merged, hidden or deleted. `equivalentJobIds` carries
+ * saved job ids only (never titles, companies or text).
+ */
+export const priorityDuplicateSchema = z
+  .object({
+    status: z.enum(SAVED_DUPLICATE_STATUSES),
+    method: z.enum(DUPLICATE_METHODS).nullable(),
+    equivalentJobIds: z
+      .array(z.string().min(1).max(MAX_IDENTITY_CHARS))
+      .max(MAX_DUPLICATE_MATCHES),
+    /** Fixed label built from our own counts — never from page content. */
+    label: z.string().min(1).max(200),
+  })
+  .strict();
+export type PriorityDuplicateInfo = z.infer<typeof priorityDuplicateSchema>;
+
 /** One prioritized saved job. */
 export const priorityEntrySchema = z
   .object({
@@ -152,6 +186,8 @@ export const priorityEntrySchema = z
     match: priorityMatchInfoSchema,
     freshness: priorityFreshnessSchema,
     application: priorityApplicationSchema,
+    /** Saved-vs-saved equivalence indication (Prompt 30). */
+    duplicate: priorityDuplicateSchema,
     /** Human-readable, privacy-safe reasons for this classification. */
     reasons: z.array(z.string().min(1).max(300)).min(1).max(6),
   })
